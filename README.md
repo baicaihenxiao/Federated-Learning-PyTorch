@@ -109,3 +109,12 @@ Federated parameters (default values):
 * [Leaf: A Benchmark for Federated Settings (CMU)](https://leaf.cmu.edu/)
 * [TensorFlow Federated](https://www.tensorflow.org/federated)
 * [Google AI Blog Post](https://ai.googleblog.com/2017/04/federated-learning-collaborative.html)
+
+---
+
+`src.update.LocalUpdate.train_val_test` 100 个人，每个人 600 样本，480 用来训练，80 validate，80 test
+```python
+idxs_train = idxs[:int(0.8*len(idxs))]
+idxs_val = idxs[int(0.8*len(idxs)):int(0.9*len(idxs))]
+idxs_test = idxs[int(0.9*len(idxs)):]
+```
