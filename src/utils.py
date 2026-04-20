@@ -3,6 +3,9 @@
 # Python version: 3.6
 
 import copy
+import logging
+import os
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -11,6 +14,37 @@ from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal
 from sampling import cifar_iid, cifar_noniid
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def get_log_path():
+    log_path = PROJECT_ROOT / 'logs'
+    log_path.mkdir(parents=True, exist_ok=True)
+    return str(log_path)
+
+
+def get_logger(log_name):
+    log_file_path = get_log_path()
+    log_file_path = os.path.join(
+        log_file_path,
+        '%s-logfile.log' % datetime.now().strftime("%Y-%m-%d"))
+
+    logger = logging.getLogger(log_name)
+    cur_format = '%(asctime)s %(levelname)s %(filename)s-%(process)d-%(funcName)s:%(lineno)d %(message)s'
+    if not logging.getLogger().handlers:
+        logging.basicConfig(handlers=[logging.FileHandler(filename=log_file_path,
+                                                          encoding='utf-8',
+                                                          mode='a+'),
+                                      logging.StreamHandler()
+                                      ],
+                            level=logging.INFO,
+                            # datefmt="%H:%M:%S",
+                            datefmt="%Y-%m-%d %H:%M:%S",
+                            format=cur_format)
+    # format = '%(asctime)s %(levelname)s %(name)s %(module)s-%(funcName)s:%(lineno)d %(process)d-%(threadName)s msg = %(message)s')
+    return logger
+
+
+LOGGER = get_logger(__name__)
 
 
 def get_dataset(args):
@@ -96,18 +130,18 @@ def average_weights(w):
 
 
 def exp_details(args):
-    print('\nExperimental details:')
-    print(f'    Model     : {args.model}')
-    print(f'    Optimizer : {args.optimizer}')
-    print(f'    Learning  : {args.lr}')
-    print(f'    Global Rounds   : {args.epochs}\n')
+    LOGGER.info('\nExperimental details:')
+    LOGGER.info(f'    Model     : {args.model}')
+    LOGGER.info(f'    Optimizer : {args.optimizer}')
+    LOGGER.info(f'    Learning  : {args.lr}')
+    LOGGER.info(f'    Global Rounds   : {args.epochs}\n')
 
-    print('    Federated parameters:')
+    LOGGER.info('    Federated parameters:')
     if args.iid:
-        print('    IID')
+        LOGGER.info('    IID')
     else:
-        print('    Non-IID')
-    print(f'    Fraction of users  : {args.frac}')
-    print(f'    Local Batch size   : {args.local_bs}')
-    print(f'    Local Epochs       : {args.local_ep}\n')
+        LOGGER.info('    Non-IID')
+    LOGGER.info(f'    Fraction of users  : {args.frac}')
+    LOGGER.info(f'    Local Batch size   : {args.local_bs}')
+    LOGGER.info(f'    Local Epochs       : {args.local_ep}\n')
     return

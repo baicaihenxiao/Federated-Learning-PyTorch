@@ -10,13 +10,14 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 
-from utils import get_dataset
+from utils import get_dataset, get_logger
 from options import args_parser
 from update import test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SAVE_DIR = PROJECT_ROOT / 'save'
+LOGGER = get_logger(__name__)
 
 
 if __name__ == '__main__':
@@ -55,7 +56,7 @@ if __name__ == '__main__':
     # Set the model to train and send it to device.
     global_model.to(device)
     global_model.train()
-    print(global_model)
+    LOGGER.info('%s', global_model)
 
     # Training
     # Set optimizer and criterion
@@ -83,13 +84,15 @@ if __name__ == '__main__':
             optimizer.step()
 
             if batch_idx % 50 == 0:
-                print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                    epoch+1, batch_idx * len(images), len(trainloader.dataset),
-                    100. * batch_idx / len(trainloader), loss.item()))
+                LOGGER.info(
+                    'Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                        epoch+1, batch_idx * len(images),
+                        len(trainloader.dataset),
+                        100. * batch_idx / len(trainloader), loss.item()))
             batch_loss.append(loss.item())
 
         loss_avg = sum(batch_loss)/len(batch_loss)
-        print('\nTrain loss:', loss_avg)
+        LOGGER.info('\nTrain loss: %s', loss_avg)
         epoch_loss.append(loss_avg)
 
     # Plot loss
@@ -104,5 +107,5 @@ if __name__ == '__main__':
 
     # testing
     test_acc, test_loss = test_inference(args, global_model, test_dataset)
-    print('Test on', len(test_dataset), 'samples')
-    print("Test Accuracy: {:.2f}%".format(100*test_acc))
+    LOGGER.info('Test on %s samples', len(test_dataset))
+    LOGGER.info("Test Accuracy: {:.2f}%".format(100*test_acc))

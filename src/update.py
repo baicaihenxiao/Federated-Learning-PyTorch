@@ -6,6 +6,11 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from utils import get_logger
+
+
+LOGGER = get_logger(__name__)
+
 
 class DatasetSplit(Dataset):
     """An abstract Dataset class wrapped around Pytorch Dataset class.
@@ -76,10 +81,12 @@ class LocalUpdate(object):
                 optimizer.step()
 
                 if self.args.verbose and (batch_idx % 10 == 0):
-                    print('| Global Round : {} | Local Epoch : {} | [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                        global_round, iter, batch_idx * len(images),
-                        len(self.trainloader.dataset),
-                        100. * batch_idx / len(self.trainloader), loss.item()))
+                    LOGGER.info(
+                        '| Global Round : {} | Local Epoch : {} | [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                            global_round, iter, batch_idx * len(images),
+                            len(self.trainloader.dataset),
+                            100. * batch_idx / len(self.trainloader),
+                            loss.item()))
                 self.logger.add_scalar('loss', loss.item())
                 batch_loss.append(loss.item())
             epoch_loss.append(sum(batch_loss)/len(batch_loss))

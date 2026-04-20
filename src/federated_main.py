@@ -28,11 +28,12 @@ except ImportError:
 from options import args_parser
 from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
-from utils import get_dataset, average_weights, exp_details
+from utils import get_dataset, average_weights, exp_details, get_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = PROJECT_ROOT / 'logs'
 SAVE_OBJECTS_DIR = PROJECT_ROOT / 'save' / 'objects'
+LOGGER = get_logger(__name__)
 
 
 if __name__ == '__main__':
@@ -42,7 +43,7 @@ if __name__ == '__main__':
     path_project = PROJECT_ROOT
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     SAVE_OBJECTS_DIR.mkdir(parents=True, exist_ok=True)
-    logger = SummaryWriter(str(LOG_DIR))
+    tb_logger = SummaryWriter(str(LOG_DIR))
 
     args = args_parser()
     exp_details(args)
@@ -84,7 +85,7 @@ if __name__ == '__main__':
     # Set the model to train and send it to device.
     global_model.to(device)
     global_model.train()
-    print(global_model)
+    LOGGER.info('%s', global_model)
 
     # copy weights
     global_weights = global_model.state_dict()
@@ -98,7 +99,7 @@ if __name__ == '__main__':
 
     for epoch in tqdm(range(args.epochs)):
         local_weights, local_losses = [], []
-        print(f'\n | Global Training Round : {epoch+1} |\n')
+        LOGGER.info(f'\n | Global Training Round : {epoch+1} |\n')
 
         global_model.train()
         m = max(int(args.frac * args.num_users), 1)
@@ -106,7 +107,7 @@ if __name__ == '__main__':
 
         for idx in idxs_users:
             local_model = LocalUpdate(args=args, dataset=train_dataset,
-                                      idxs=user_groups[idx], logger=logger)
+                                      idxs=user_groups[idx], logger=tb_logger)
             w, loss = local_model.update_weights(
                 model=copy.deepcopy(global_model), global_round=epoch)
             local_weights.append(copy.deepcopy(w))
@@ -126,7 +127,7 @@ if __name__ == '__main__':
         global_model.eval()
         for c in range(args.num_users):
             local_model = LocalUpdate(args=args, dataset=train_dataset,
-                                      idxs=user_groups[idx], logger=logger)
+                                      idxs=user_groups[idx], logger=tb_logger)
             acc, loss = local_model.inference(model=global_model)
             list_acc.append(acc)
             list_loss.append(loss)
@@ -134,16 +135,18 @@ if __name__ == '__main__':
 
         # print global training loss after every 'i' rounds
         if (epoch+1) % print_every == 0:
-            print(f' \nAvg Training Stats after {epoch+1} global rounds:')
-            print(f'Training Loss : {np.mean(np.array(train_loss))}')
-            print('Train Accuracy: {:.2f}% \n'.format(100*train_accuracy[-1]))
+            LOGGER.info(f' \nAvg Training Stats after {epoch+1} global rounds:')
+            LOGGER.info(f'Training Loss : {np.mean(np.array(train_loss))}')
+            LOGGER.info('Train Accuracy: {:.2f}% \n'.format(
+                100*train_accuracy[-1]))
 
     # Test inference after completion of training
     test_acc, test_loss = test_inference(args, global_model, test_dataset)
 
-    print(f' \n Results after {args.epochs} global rounds of training:')
-    print("|---- Avg Train Accuracy: {:.2f}%".format(100*train_accuracy[-1]))
-    print("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
+    LOGGER.info(f' \n Results after {args.epochs} global rounds of training:')
+    LOGGER.info("|---- Avg Train Accuracy: {:.2f}%".format(
+        100*train_accuracy[-1]))
+    LOGGER.info("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
 
     # Saving the objects train_loss and train_accuracy:
     file_name = SAVE_OBJECTS_DIR / (
@@ -155,7 +158,7 @@ if __name__ == '__main__':
     with open(file_name, 'wb') as f:
         pickle.dump([train_loss, train_accuracy], f)
 
-    print('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
+    LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
 
     # PLOTTING (optional)
     # import matplotlib
