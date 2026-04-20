@@ -4,6 +4,7 @@
 
 from torch import nn
 import torch.nn.functional as F
+from torchvision.models import resnet18
 
 
 class MLP(nn.Module):
@@ -84,6 +85,21 @@ class CNNCifar(nn.Module):
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return F.log_softmax(x, dim=1)
+
+
+class ResNet18Cifar(nn.Module):
+    def __init__(self, args):
+        super(ResNet18Cifar, self).__init__()
+        self.model = resnet18(weights=None)
+        self.model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1,
+                                     padding=1, bias=False)
+        self.model.maxpool = nn.Identity()
+        self.model.fc = nn.Linear(self.model.fc.in_features, args.num_classes)
+
+    def forward(self, x):
+        x = self.model(x)
+        return F.log_softmax(x, dim=1)
+
 
 class modelC(nn.Module):
     def __init__(self, input_size, n_classes=10, **kwargs):

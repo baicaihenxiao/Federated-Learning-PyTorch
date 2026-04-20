@@ -27,7 +27,7 @@ except ImportError:
 
 from options import args_parser
 from update import LocalUpdate, test_inference
-from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar
+from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
 from utils import get_dataset, average_weights, exp_details
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +64,11 @@ if __name__ == '__main__':
             global_model = CNNFashion_Mnist(args=args)
         elif args.dataset == 'cifar':
             global_model = CNNCifar(args=args)
+
+    elif args.model == 'resnet18':
+        if args.dataset != 'cifar':
+            exit('Error: resnet18 is configured for cifar')
+        global_model = ResNet18Cifar(args=args)
 
     elif args.model == 'mlp':
         # Multi-layer preceptron

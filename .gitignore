@@ -1,2 +1,8 @@
 .DS_Store
 .idea
+data
+logs
+save
+__pycache__
+
+src/__pycache__/
