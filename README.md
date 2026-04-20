@@ -118,3 +118,5 @@ idxs_train = idxs[:int(0.8*len(idxs))]
 idxs_val = idxs[int(0.8*len(idxs)):int(0.9*len(idxs))]
 idxs_test = idxs[int(0.9*len(idxs)):]
 ```
+
+`validate` 这个没看到用

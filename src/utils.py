@@ -3,10 +3,14 @@
 # Python version: 3.6
 
 import copy
+from pathlib import Path
+
 import torch
 from torchvision import datasets, transforms
 from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal
 from sampling import cifar_iid, cifar_noniid
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def get_dataset(args):
@@ -16,16 +20,18 @@ def get_dataset(args):
     """
 
     if args.dataset == 'cifar':
-        data_dir = '../data/cifar/'
+        data_dir = PROJECT_ROOT / 'data' / 'cifar'
         apply_transform = transforms.Compose(
             [transforms.ToTensor(),
              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-        train_dataset = datasets.CIFAR10(data_dir, train=True, download=True,
-                                       transform=apply_transform)
+        train_dataset = datasets.CIFAR10(str(data_dir), train=True,
+                                         download=True,
+                                         transform=apply_transform)
 
-        test_dataset = datasets.CIFAR10(data_dir, train=False, download=True,
-                                      transform=apply_transform)
+        test_dataset = datasets.CIFAR10(str(data_dir), train=False,
+                                        download=True,
+                                        transform=apply_transform)
 
         # sample training data amongst users
         if args.iid:
@@ -42,18 +48,18 @@ def get_dataset(args):
 
     elif args.dataset == 'mnist' or 'fmnist':
         if args.dataset == 'mnist':
-            data_dir = '../data/mnist/'
+            data_dir = PROJECT_ROOT / 'data' / 'mnist'
         else:
-            data_dir = '../data/fmnist/'
+            data_dir = PROJECT_ROOT / 'data' / 'fmnist'
 
         apply_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,))])
 
-        train_dataset = datasets.MNIST(data_dir, train=True, download=True,
+        train_dataset = datasets.MNIST(str(data_dir), train=True, download=True,
                                        transform=apply_transform)
 
-        test_dataset = datasets.MNIST(data_dir, train=False, download=True,
+        test_dataset = datasets.MNIST(str(data_dir), train=False, download=True,
                                       transform=apply_transform)
 
         # sample training data amongst users

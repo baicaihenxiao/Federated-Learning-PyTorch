@@ -7,24 +7,42 @@ import os
 import copy
 import time
 import pickle
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
 import torch
-from tensorboardX import SummaryWriter
+try:
+    from tensorboardX import SummaryWriter
+except ImportError:
+    class SummaryWriter(object):
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def add_scalar(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
 
 from options import args_parser
 from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar
 from utils import get_dataset, average_weights, exp_details
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+LOG_DIR = PROJECT_ROOT / 'logs'
+SAVE_OBJECTS_DIR = PROJECT_ROOT / 'save' / 'objects'
+
 
 if __name__ == '__main__':
     start_time = time.time()
 
     # define paths
-    path_project = os.path.abspath('..')
-    logger = SummaryWriter('../logs')
+    path_project = PROJECT_ROOT
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    SAVE_OBJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    logger = SummaryWriter(str(LOG_DIR))
 
     args = args_parser()
     exp_details(args)
@@ -123,9 +141,11 @@ if __name__ == '__main__':
     print("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
 
     # Saving the objects train_loss and train_accuracy:
-    file_name = '../save/objects/{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}].pkl'.\
-        format(args.dataset, args.model, args.epochs, args.frac, args.iid,
-               args.local_ep, args.local_bs)
+    file_name = SAVE_OBJECTS_DIR / (
+        '{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}].pkl'.format(
+            args.dataset, args.model, args.epochs, args.frac, args.iid,
+            args.local_ep, args.local_bs)
+    )
 
     with open(file_name, 'wb') as f:
         pickle.dump([train_loss, train_accuracy], f)

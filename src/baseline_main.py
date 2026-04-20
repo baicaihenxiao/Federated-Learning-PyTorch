@@ -4,6 +4,7 @@
 
 
 from tqdm import tqdm
+from pathlib import Path
 import matplotlib.pyplot as plt
 
 import torch
@@ -13,6 +14,9 @@ from utils import get_dataset
 from options import args_parser
 from update import test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SAVE_DIR = PROJECT_ROOT / 'save'
 
 
 if __name__ == '__main__':
@@ -85,12 +89,14 @@ if __name__ == '__main__':
         epoch_loss.append(loss_avg)
 
     # Plot loss
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
     plt.figure()
     plt.plot(range(len(epoch_loss)), epoch_loss)
     plt.xlabel('epochs')
     plt.ylabel('Train loss')
-    plt.savefig('../save/nn_{}_{}_{}.png'.format(args.dataset, args.model,
-                                                 args.epochs))
+    plot_path = SAVE_DIR / 'nn_{}_{}_{}.png'.format(args.dataset, args.model,
+                                                    args.epochs)
+    plt.savefig(plot_path)
 
     # testing
     test_acc, test_loss = test_inference(args, global_model, test_dataset)
