@@ -5,6 +5,7 @@
 
 from tqdm import tqdm
 from pathlib import Path
+import time
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -25,6 +26,8 @@ LOGGER = get_logger(__name__)
 
 
 if __name__ == '__main__':
+    start_time = time.time()
+
     args = args_parser()
     # Prefer CUDA when explicitly requested; otherwise use MPS if available.
     device = get_device(args)
@@ -176,3 +179,4 @@ if __name__ == '__main__':
 
     LOGGER.info('Test on %s samples', len(test_dataset))
     LOGGER.info("Test Accuracy: {:.2f}%".format(100*test_acc))
+    LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))

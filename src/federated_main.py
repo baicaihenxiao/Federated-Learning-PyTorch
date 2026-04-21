@@ -105,23 +105,32 @@ if __name__ == '__main__':
     # Training
     train_loss, train_accuracy = [], []
     test_epochs, test_accuracy, test_losses = [], [], []
-    print_every = 2
 
     for epoch in tqdm(range(args.epochs)):
+        round_start_time = time.time()
+        current_epoch = epoch + 1
         local_weights, local_losses = [], []
-        LOGGER.info(f'\n | Global Training Round : {epoch+1} |\n')
+        LOGGER.info(f'\n | Global Training Round : {current_epoch}/{args.epochs} |\n')
 
         global_model.train()
         m = max(int(args.frac * args.num_users), 1)
         idxs_users = np.random.choice(range(args.num_users), m, replace=False)
 
-        for idx in idxs_users:
+        for user_position, idx in enumerate(idxs_users, start=1):
+            user_start_time = time.time()
             local_model = LocalUpdate(args=args, dataset=train_dataset,
                                       idxs=user_groups[idx], logger=tb_logger)
             w, loss = local_model.update_weights(
-                model=copy.deepcopy(global_model), global_round=epoch)
+                model=copy.deepcopy(global_model),
+                global_round=current_epoch)
             local_weights.append(copy.deepcopy(w))
             local_losses.append(copy.deepcopy(loss))
+            if args.verbose:
+                LOGGER.info(
+                    '| Global Round : %s/%s | User : %s/%s (idx: %s) | '
+                    'Local Loss: %.6f | User Time: %.2fs',
+                    current_epoch, args.epochs, user_position, m, int(idx),
+                    loss, time.time() - user_start_time)
 
         # update global weights
         global_weights = average_weights(local_weights)
@@ -143,15 +152,8 @@ if __name__ == '__main__':
             list_acc.append(acc)
             list_loss.append(loss)
         train_accuracy.append(sum(list_acc)/len(list_acc))
+        avg_client_loss = sum(list_loss) / len(list_loss)
 
-        # print global training loss after every 'i' rounds
-        if (epoch+1) % print_every == 0:
-            LOGGER.info(f' \nAvg Training Stats after {epoch+1} global rounds:')
-            LOGGER.info(f'Training Loss : {np.mean(np.array(train_loss))}')
-            LOGGER.info('Train Accuracy: {:.2f}% \n'.format(
-                100*train_accuracy[-1]))
-
-        current_epoch = epoch + 1
         should_test = (
             args.test_interval > 0 and
             (current_epoch % args.test_interval == 0 or
@@ -163,9 +165,24 @@ if __name__ == '__main__':
             test_epochs.append(current_epoch)
             test_accuracy.append(test_acc)
             test_losses.append(test_loss)
-            LOGGER.info(
-                'Test after global round %s/%s: Loss: %.4f | Accuracy: %.2f%%',
-                current_epoch, args.epochs, test_loss, 100*test_acc)
+
+        round_summary = (
+            'Round Summary : {}/{} | Selected Users: {}/{} | '
+            'Avg Local Train Loss: {:.6f} | Avg Client Loss: {:.6f} | '
+            'Avg Client Accuracy: {:.2f}%'.format(
+                current_epoch, args.epochs, m, args.num_users, loss_avg,
+                avg_client_loss, 100*train_accuracy[-1])
+        )
+        if should_test:
+            round_summary += (
+                ' | Test Loss: {:.4f} | Test Accuracy: {:.2f}%'.format(
+                    test_loss, 100*test_acc)
+            )
+        round_summary += (
+            ' | Round Time: {:.2f}s | Elapsed Time: {:.2f}s'.format(
+                time.time() - round_start_time, time.time() - start_time)
+        )
+        LOGGER.info(round_summary)
 
     if not test_epochs or test_epochs[-1] != args.epochs:
         test_acc, test_loss = test_inference(args, global_model, test_dataset)
@@ -190,8 +207,6 @@ if __name__ == '__main__':
 
     with open(file_name, 'wb') as f:
         pickle.dump([train_loss, train_accuracy], f)
-
-    LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
 
     # Plot Loss curve
     plt.figure()
@@ -221,3 +236,4 @@ if __name__ == '__main__':
     plt.savefig(acc_plot_path)
     plt.close()
     LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
+    LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
