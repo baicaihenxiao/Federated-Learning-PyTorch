@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 
-from utils import get_dataset, get_logger
+from utils import get_dataset, get_device, get_logger, get_optimizer, log_args
 from options import args_parser
 from update import test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
@@ -22,9 +22,12 @@ LOGGER = get_logger(__name__)
 
 if __name__ == '__main__':
     args = args_parser()
-    if args.gpu:
-        torch.cuda.set_device(args.gpu)
-    device = 'cuda' if args.gpu else 'cpu'
+    # Prefer CUDA when explicitly requested; otherwise use MPS if available.
+    device = get_device(args)
+    # Cache the resolved device so LocalUpdate/test helpers do not re-detect it.
+    args.device = str(device)
+    LOGGER.info('Using device: %s', device)
+    log_args(args)
 
     # load datasets
     train_dataset, test_dataset, _ = get_dataset(args)
@@ -60,14 +63,16 @@ if __name__ == '__main__':
 
     # Training
     # Set optimizer and criterion
-    if args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(global_model.parameters(), lr=args.lr,
-                                    momentum=args.momentum)
-    elif args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(global_model.parameters(), lr=args.lr,
-                                     weight_decay=1e-4)
+    optimizer = get_optimizer(args, global_model)
+    # Decay the learning rate over centralized training for better CIFAR tuning.
+    if args.scheduler == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs)
+    else:
+        scheduler = None
 
-    trainloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    trainloader = DataLoader(train_dataset, batch_size=args.batch_size,
+                             shuffle=True)
     criterion = torch.nn.NLLLoss().to(device)
     epoch_loss = []
 
@@ -94,6 +99,8 @@ if __name__ == '__main__':
         loss_avg = sum(batch_loss)/len(batch_loss)
         LOGGER.info('\nTrain loss: %s', loss_avg)
         epoch_loss.append(loss_avg)
+        if scheduler is not None:
+            scheduler.step()
 
     # Plot loss
     SAVE_DIR.mkdir(parents=True, exist_ok=True)

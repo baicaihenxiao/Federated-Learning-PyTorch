@@ -47,6 +47,51 @@ def get_logger(log_name):
 LOGGER = get_logger(__name__)
 
 
+def log_args(args):
+    """Log the fully resolved command-line arguments at run start."""
+    LOGGER.info('\nResolved arguments:')
+    for key, value in sorted(vars(args).items()):
+        LOGGER.info('    %s: %s', key, value)
+    LOGGER.info('')
+
+
+def get_device(args):
+    """Return the best available torch device for this run."""
+    # Reuse the already resolved device when helper classes are created later.
+    configured_device = getattr(args, 'device', None)
+    if configured_device is not None:
+        return torch.device(configured_device)
+
+    # Treat --gpu as an explicit CUDA request; fall back cleanly if unavailable.
+    if args.gpu is not None:
+        if torch.cuda.is_available():
+            torch.cuda.set_device(args.gpu)
+            return torch.device(f'cuda:{args.gpu}')
+        LOGGER.warning('CUDA GPU %s requested, but CUDA is not available.',
+                       args.gpu)
+
+    # On Apple Silicon, MPS is much faster than CPU when the PyTorch build has it.
+    mps_backend = getattr(torch.backends, 'mps', None)
+    if mps_backend is not None and mps_backend.is_available():
+        return torch.device('mps')
+
+    return torch.device('cpu')
+
+
+def get_optimizer(args, model):
+    """Build the configured optimizer for centralized and local training."""
+    if args.optimizer == 'sgd':
+        # CIFAR ResNet baselines typically need momentum and weight decay.
+        return torch.optim.SGD(model.parameters(), lr=args.lr,
+                               momentum=args.momentum,
+                               weight_decay=args.weight_decay)
+    if args.optimizer == 'adam':
+        return torch.optim.Adam(model.parameters(), lr=args.lr,
+                                weight_decay=args.weight_decay)
+
+    raise ValueError(f'Unrecognized optimizer: {args.optimizer}')
+
+
 def get_dataset(args):
     """ Returns train and test datasets and a user group which is a dict where
     the keys are the user index and the values are the corresponding data for
@@ -59,10 +104,14 @@ def get_dataset(args):
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+            # CIFAR-10 channel statistics; more stable than generic 0.5 scaling.
+            transforms.Normalize((0.4914, 0.4822, 0.4465),
+                                 (0.2470, 0.2435, 0.2616))])
         test_transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+            # Match train-time normalization during evaluation.
+            transforms.Normalize((0.4914, 0.4822, 0.4465),
+                                 (0.2470, 0.2435, 0.2616))])
 
         train_dataset = datasets.CIFAR10(str(data_dir), train=True,
                                          download=True,
@@ -134,6 +183,10 @@ def exp_details(args):
     LOGGER.info(f'    Model     : {args.model}')
     LOGGER.info(f'    Optimizer : {args.optimizer}')
     LOGGER.info(f'    Learning  : {args.lr}')
+    LOGGER.info(f'    Momentum  : {args.momentum}')
+    LOGGER.info(f'    Weight decay : {args.weight_decay}')
+    LOGGER.info(f'    Scheduler : {args.scheduler}')
+    LOGGER.info(f'    Batch size: {args.batch_size}')
     LOGGER.info(f'    Global Rounds   : {args.epochs}\n')
 
     LOGGER.info('    Federated parameters:')

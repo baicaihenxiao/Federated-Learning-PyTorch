@@ -28,7 +28,9 @@ except ImportError:
 from options import args_parser
 from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
-from utils import get_dataset, average_weights, exp_details, get_logger
+from utils import (
+    get_dataset, get_device, average_weights, get_logger, log_args,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = PROJECT_ROOT / 'logs'
@@ -46,12 +48,12 @@ if __name__ == '__main__':
     tb_logger = SummaryWriter(str(LOG_DIR))
 
     args = args_parser()
-    exp_details(args)
 
-    # No such parameter
-    # if args.gpu_id:
-    #     torch.cuda.set_device(args.gpu_id)
-    device = 'cuda' if args.gpu else 'cpu'
+    # Resolve the device once and share it with LocalUpdate instances.
+    device = get_device(args)
+    args.device = str(device)
+    LOGGER.info('Using device: %s', device)
+    log_args(args)
 
     # load dataset and user groups
     train_dataset, test_dataset, user_groups = get_dataset(args)
@@ -126,8 +128,9 @@ if __name__ == '__main__':
         list_acc, list_loss = [], []
         global_model.eval()
         for c in range(args.num_users):
+            # Evaluate every client's held-out split, not just the last sampled one.
             local_model = LocalUpdate(args=args, dataset=train_dataset,
-                                      idxs=user_groups[idx], logger=tb_logger)
+                                      idxs=user_groups[c], logger=tb_logger)
             acc, loss = local_model.inference(model=global_model)
             list_acc.append(acc)
             list_loss.append(loss)

@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from utils import get_logger
+from utils import get_device, get_logger, get_optimizer
 
 
 LOGGER = get_logger(__name__)
@@ -34,7 +34,7 @@ class LocalUpdate(object):
         self.logger = logger
         self.trainloader, self.validloader, self.testloader = self.train_val_test(
             dataset, list(idxs))
-        self.device = 'cuda' if args.gpu else 'cpu'
+        self.device = get_device(args)
         # Default criterion set to NLL loss function
         self.criterion = nn.NLLLoss().to(self.device)
 
@@ -58,16 +58,13 @@ class LocalUpdate(object):
 
     def update_weights(self, model, global_round):
         # Set mode to train model
+        # Federated training passes copied models, so move each copy explicitly.
+        model.to(self.device)
         model.train()
         epoch_loss = []
 
         # Set optimizer for the local updates
-        if self.args.optimizer == 'sgd':
-            optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr,
-                                        momentum=self.args.momentum)
-        elif self.args.optimizer == 'adam':
-            optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr,
-                                         weight_decay=1e-4)
+        optimizer = get_optimizer(self.args, model)
 
         for iter in range(self.args.local_ep):
             batch_loss = []
@@ -98,21 +95,24 @@ class LocalUpdate(object):
         """
 
         model.eval()
+        # Keep inference on the same device used for local training.
+        model.to(self.device)
         loss, total, correct = 0.0, 0.0, 0.0
 
-        for batch_idx, (images, labels) in enumerate(self.testloader):
-            images, labels = images.to(self.device), labels.to(self.device)
+        with torch.no_grad():
+            for batch_idx, (images, labels) in enumerate(self.testloader):
+                images, labels = images.to(self.device), labels.to(self.device)
 
-            # Inference
-            outputs = model(images)
-            batch_loss = self.criterion(outputs, labels)
-            loss += batch_loss.item()
+                # Inference
+                outputs = model(images)
+                batch_loss = self.criterion(outputs, labels)
+                loss += batch_loss.item()
 
-            # Prediction
-            _, pred_labels = torch.max(outputs, 1)
-            pred_labels = pred_labels.view(-1)
-            correct += torch.sum(torch.eq(pred_labels, labels)).item()
-            total += len(labels)
+                # Prediction
+                _, pred_labels = torch.max(outputs, 1)
+                pred_labels = pred_labels.view(-1)
+                correct += torch.sum(torch.eq(pred_labels, labels)).item()
+                total += len(labels)
 
         accuracy = correct/total
         return accuracy, loss
@@ -125,24 +125,26 @@ def test_inference(args, model, test_dataset):
     model.eval()
     loss, total, correct = 0.0, 0.0, 0.0
 
-    device = 'cuda' if args.gpu else 'cpu'
+    # Evaluate on the device where the caller placed the model.
+    device = next(model.parameters()).device
     criterion = nn.NLLLoss().to(device)
     testloader = DataLoader(test_dataset, batch_size=128,
                             shuffle=False)
 
-    for batch_idx, (images, labels) in enumerate(testloader):
-        images, labels = images.to(device), labels.to(device)
+    with torch.no_grad():
+        for batch_idx, (images, labels) in enumerate(testloader):
+            images, labels = images.to(device), labels.to(device)
 
-        # Inference
-        outputs = model(images)
-        batch_loss = criterion(outputs, labels)
-        loss += batch_loss.item()
+            # Inference
+            outputs = model(images)
+            batch_loss = criterion(outputs, labels)
+            loss += batch_loss.item()
 
-        # Prediction
-        _, pred_labels = torch.max(outputs, 1)
-        pred_labels = pred_labels.view(-1)
-        correct += torch.sum(torch.eq(pred_labels, labels)).item()
-        total += len(labels)
+            # Prediction
+            _, pred_labels = torch.max(outputs, 1)
+            pred_labels = pred_labels.view(-1)
+            correct += torch.sum(torch.eq(pred_labels, labels)).item()
+            total += len(labels)
 
     accuracy = correct/total
     return accuracy, loss
