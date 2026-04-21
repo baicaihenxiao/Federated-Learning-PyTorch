@@ -21,25 +21,25 @@ Install all the packages from requirments.txt
 ## Running the experiments
 The baseline experiment trains the model in the conventional way.
 
-* To run the baseline experiment with MNIST on MLP using CPU:
+* To run the baseline experiment with MNIST on CNN using CPU:
 ```
-python src/baseline_main.py --model=mlp --dataset=mnist --epochs=10
+python src/baseline_main.py --dataset=mnist --epochs=10
 ```
 * Or to run it on GPU (eg: if gpu:0 is available):
 ```
-python src/baseline_main.py --model=mlp --dataset=mnist --gpu=0 --epochs=10
+python src/baseline_main.py --dataset=mnist --gpu=0 --epochs=10
 ```
 -----
 
 Federated experiment involves training a global model using many local models.
 
-* To run the federated experiment with CIFAR on CNN (IID):
+* To run the federated experiment with CIFAR-10 on ResNet-18 (IID):
 ```
-python src/federated_main.py --model=cnn --dataset=cifar --gpu=0 --iid=1 --epochs=10
+python src/federated_main.py --dataset=cifar --gpu=0 --iid=1 --epochs=10
 ```
 * To run the same experiment under non-IID condition:
 ```
-python src/federated_main.py --model=cnn --dataset=cifar --gpu=0 --iid=0 --epochs=10
+python src/federated_main.py --dataset=cifar --gpu=0 --iid=0 --epochs=10
 ```
 
 You can change the default values of other parameters to simulate different conditions. Refer to the options section.
@@ -47,8 +47,8 @@ You can change the default values of other parameters to simulate different cond
 ## Options
 The default values for various paramters parsed to the experiment are given in ```options.py```. Details are given some of those parameters:
 
-* ```--dataset:```  Default: 'mnist'. Options: 'mnist', 'fmnist', 'cifar'
-* ```--model:```    Default: 'mlp'. Options: 'mlp', 'cnn'
+* ```--dataset:```  Default: 'cifar'. Options: 'mnist', 'fmnist', 'cifar'
+* ```--model:```    Default depends on dataset ('cnn' for MNIST/Fashion-MNIST, 'resnet18' for CIFAR-10). Options: 'mlp', 'cnn', 'resnet18'
 * ```--gpu:```      Default: None (runs on CPU). Can also be set to the specific gpu id.
 * ```--epochs:```   Number of rounds of training.
 * ```--lr:```       Learning rate set to 0.01 by default.

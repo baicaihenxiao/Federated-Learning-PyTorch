@@ -5,6 +5,13 @@
 import argparse
 
 
+DEFAULT_MODELS = {
+    'mnist': 'cnn',
+    'fmnist': 'cnn',
+    'cifar': 'resnet18',
+}
+
+
 TRAINING_PRESETS = {
     ('cifar', 'resnet18'): {
         'sgd_lr': 0.1,
@@ -69,6 +76,8 @@ FALLBACK_TRAINING_PRESET = {
 def apply_training_preset(args):
     """Fill unset optimizer defaults from the selected dataset/model preset."""
     args.dataset = args.dataset.lower()
+    if args.model is None:
+        args.model = DEFAULT_MODELS.get(args.dataset, 'cnn')
     args.model = args.model.lower()
     args.optimizer = args.optimizer.lower()
 
@@ -124,8 +133,10 @@ def args_parser():
                         'intermediate test evaluation')
 
     # model arguments
-    parser.add_argument('--model', type=str, default='resnet18',
-                        help='model name: mlp, cnn, or resnet18')
+    parser.add_argument('--model', type=str.lower, default=None,
+                        choices=['mlp', 'cnn', 'resnet18'],
+                        help='model name: mlp, cnn, or resnet18; default '
+                        'depends on dataset')
     parser.add_argument('--kernel_num', type=int, default=9,
                         help='number of each kind of kernel')
     parser.add_argument('--kernel_sizes', type=str, default='3,4,5',
@@ -143,8 +154,9 @@ def args_parser():
                         strided convolutions")
 
     # other arguments
-    parser.add_argument('--dataset', type=str, default='cifar', help="name \
-                        of dataset")
+    parser.add_argument('--dataset', type=str.lower, default='cifar',
+                        choices=['mnist', 'fmnist', 'cifar'],
+                        help="name of dataset")
     parser.add_argument('--num_classes', type=int, default=10, help="number \
                         of classes")
     parser.add_argument('--gpu', type=int, default=None, help="To use CUDA, set \
