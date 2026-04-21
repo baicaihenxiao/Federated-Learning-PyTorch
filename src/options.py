@@ -97,7 +97,7 @@ def args_parser():
     parser = argparse.ArgumentParser()
 
     # federated arguments (Notation for the arguments followed from paper)
-    parser.add_argument('--epochs', type=int, default=10,
+    parser.add_argument('--epochs', type=int, default=50,
                         help="number of rounds of training")
     parser.add_argument('--num_users', type=int, default=100,
                         help="number of users: K")
@@ -118,6 +118,10 @@ def args_parser():
     parser.add_argument('--scheduler', type=str, default=None,
                         choices=['none', 'cosine'],
                         help='learning rate scheduler for baseline training')
+    parser.add_argument('--test_interval', type=int, default=1,
+                        help='evaluate and print test accuracy every N epochs '
+                        'or global rounds during training; set 0 to disable '
+                        'intermediate test evaluation')
 
     # model arguments
     parser.add_argument('--model', type=str, default='resnet18',
@@ -158,4 +162,6 @@ def args_parser():
     parser.add_argument('--verbose', type=int, default=1, help='verbose')
     parser.add_argument('--seed', type=int, default=1, help='random seed')
     args = apply_training_preset(parser.parse_args())
+    if args.test_interval < 0:
+        parser.error('--test_interval must be greater than or equal to 0')
     return args

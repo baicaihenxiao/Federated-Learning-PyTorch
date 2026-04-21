@@ -5,6 +5,7 @@
 import copy
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -53,6 +54,23 @@ def log_args(args):
     for key, value in sorted(vars(args).items()):
         LOGGER.info('    %s: %s', key, value)
     LOGGER.info('')
+
+
+def _format_filename_value(value):
+    if value is None:
+        return 'none'
+    value = str(value).strip().lower().replace('.', 'p')
+    value = re.sub(r'[^a-z0-9_-]+', '-', value)
+    return value.strip('-')
+
+
+def get_run_name(args, prefix, fields):
+    """Build a timestamped, argument-rich name for run artifacts."""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    parts = [timestamp, prefix]
+    for field in fields:
+        parts.append(f'{field}-{_format_filename_value(getattr(args, field))}')
+    return '_'.join(parts)
 
 
 def get_device(args):

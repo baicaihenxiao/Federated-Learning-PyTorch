@@ -3,7 +3,6 @@
 # Python version: 3.6
 
 
-import os
 import copy
 import time
 import pickle
@@ -11,6 +10,9 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import torch
 try:
     from tensorboardX import SummaryWriter
@@ -29,12 +31,14 @@ from options import args_parser
 from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
 from utils import (
-    get_dataset, get_device, average_weights, get_logger, log_args,
+    get_dataset, get_device, average_weights, get_logger, get_run_name,
+    log_args,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = PROJECT_ROOT / 'logs'
-SAVE_OBJECTS_DIR = PROJECT_ROOT / 'save' / 'objects'
+SAVE_DIR = PROJECT_ROOT / 'save'
+SAVE_OBJECTS_DIR = SAVE_DIR / 'objects'
 LOGGER = get_logger(__name__)
 
 
@@ -42,8 +46,8 @@ if __name__ == '__main__':
     start_time = time.time()
 
     # define paths
-    path_project = PROJECT_ROOT
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
     SAVE_OBJECTS_DIR.mkdir(parents=True, exist_ok=True)
     tb_logger = SummaryWriter(str(LOG_DIR))
 
@@ -54,6 +58,12 @@ if __name__ == '__main__':
     args.device = str(device)
     LOGGER.info('Using device: %s', device)
     log_args(args)
+    run_name = get_run_name(
+        args,
+        'fed',
+        ['dataset', 'model', 'epochs', 'num_users', 'frac', 'iid',
+         'local_ep', 'local_bs', 'optimizer', 'lr', 'test_interval'],
+    )
 
     # load dataset and user groups
     train_dataset, test_dataset, user_groups = get_dataset(args)
@@ -87,17 +97,15 @@ if __name__ == '__main__':
     # Set the model to train and send it to device.
     global_model.to(device)
     global_model.train()
-    LOGGER.info('%s', global_model)
+    # LOGGER.info('%s', global_model)
 
     # copy weights
     global_weights = global_model.state_dict()
 
     # Training
     train_loss, train_accuracy = [], []
-    val_acc_list, net_list = [], []
-    cv_loss, cv_acc = [], []
+    test_epochs, test_accuracy, test_losses = [], [], []
     print_every = 2
-    val_loss_pre, counter = 0, 0
 
     for epoch in tqdm(range(args.epochs)):
         local_weights, local_losses = [], []
@@ -143,8 +151,30 @@ if __name__ == '__main__':
             LOGGER.info('Train Accuracy: {:.2f}% \n'.format(
                 100*train_accuracy[-1]))
 
-    # Test inference after completion of training
-    test_acc, test_loss = test_inference(args, global_model, test_dataset)
+        current_epoch = epoch + 1
+        should_test = (
+            args.test_interval > 0 and
+            (current_epoch % args.test_interval == 0 or
+             current_epoch == args.epochs)
+        )
+        if should_test:
+            test_acc, test_loss = test_inference(
+                args, global_model, test_dataset)
+            test_epochs.append(current_epoch)
+            test_accuracy.append(test_acc)
+            test_losses.append(test_loss)
+            LOGGER.info(
+                'Test after global round %s/%s: Loss: %.4f | Accuracy: %.2f%%',
+                current_epoch, args.epochs, test_loss, 100*test_acc)
+
+    if not test_epochs or test_epochs[-1] != args.epochs:
+        test_acc, test_loss = test_inference(args, global_model, test_dataset)
+        test_epochs.append(args.epochs)
+        test_accuracy.append(test_acc)
+        test_losses.append(test_loss)
+    else:
+        test_acc = test_accuracy[-1]
+        test_loss = test_losses[-1]
 
     LOGGER.info(f' \n Results after {args.epochs} global rounds of training:')
     LOGGER.info("|---- Avg Train Accuracy: {:.2f}%".format(
@@ -163,27 +193,31 @@ if __name__ == '__main__':
 
     LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
 
-    # PLOTTING (optional)
-    # import matplotlib
-    # import matplotlib.pyplot as plt
-    # matplotlib.use('Agg')
-
     # Plot Loss curve
-    # plt.figure()
-    # plt.title('Training Loss vs Communication rounds')
-    # plt.plot(range(len(train_loss)), train_loss, color='r')
-    # plt.ylabel('Training loss')
-    # plt.xlabel('Communication Rounds')
-    # plt.savefig('../save/fed_{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}]_loss.png'.
-    #             format(args.dataset, args.model, args.epochs, args.frac,
-    #                    args.iid, args.local_ep, args.local_bs))
-    #
-    # # Plot Average Accuracy vs Communication rounds
-    # plt.figure()
-    # plt.title('Average Accuracy vs Communication rounds')
-    # plt.plot(range(len(train_accuracy)), train_accuracy, color='k')
-    # plt.ylabel('Average Accuracy')
-    # plt.xlabel('Communication Rounds')
-    # plt.savefig('../save/fed_{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}]_acc.png'.
-    #             format(args.dataset, args.model, args.epochs, args.frac,
-    #                    args.iid, args.local_ep, args.local_bs))
+    plt.figure()
+    plt.title('Training Loss vs Communication Rounds')
+    plt.plot(range(1, len(train_loss)+1), train_loss, color='r')
+    plt.ylabel('Training loss')
+    plt.xlabel('Communication rounds')
+    plt.tight_layout()
+    loss_plot_path = SAVE_DIR / f'{run_name}_loss.png'
+    plt.savefig(loss_plot_path)
+    plt.close()
+    LOGGER.info('Saved loss figure: %s', loss_plot_path)
+
+    # Plot Accuracy curve
+    plt.figure()
+    plt.title('Accuracy vs Communication Rounds')
+    plt.plot(range(1, len(train_accuracy)+1),
+             [100*acc for acc in train_accuracy], color='k',
+             label='Avg train')
+    plt.plot(test_epochs, [100*acc for acc in test_accuracy],
+             marker='o', label='Test')
+    plt.ylabel('Accuracy (%)')
+    plt.xlabel('Communication rounds')
+    plt.legend()
+    plt.tight_layout()
+    acc_plot_path = SAVE_DIR / f'{run_name}_acc.png'
+    plt.savefig(acc_plot_path)
+    plt.close()
+    LOGGER.info('Saved accuracy figure: %s', acc_plot_path)

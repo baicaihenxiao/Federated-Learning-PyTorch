@@ -5,12 +5,16 @@
 
 from tqdm import tqdm
 from pathlib import Path
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import torch
 from torch.utils.data import DataLoader
 
-from utils import get_dataset, get_device, get_logger, get_optimizer, log_args
+from utils import (
+    get_dataset, get_device, get_logger, get_optimizer, get_run_name, log_args,
+)
 from options import args_parser
 from update import test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
@@ -28,6 +32,12 @@ if __name__ == '__main__':
     args.device = str(device)
     LOGGER.info('Using device: %s', device)
     log_args(args)
+    run_name = get_run_name(
+        args,
+        'baseline',
+        ['dataset', 'model', 'epochs', 'optimizer', 'lr', 'batch_size',
+         'scheduler', 'test_interval'],
+    )
 
     # load datasets
     train_dataset, test_dataset, _ = get_dataset(args)
@@ -59,7 +69,7 @@ if __name__ == '__main__':
     # Set the model to train and send it to device.
     global_model.to(device)
     global_model.train()
-    LOGGER.info('%s', global_model)
+    # LOGGER.info('%s', global_model)
 
     # Training
     # Set optimizer and criterion
@@ -75,8 +85,10 @@ if __name__ == '__main__':
                              shuffle=True)
     criterion = torch.nn.NLLLoss().to(device)
     epoch_loss = []
+    test_epochs, test_accuracy, test_losses = [], [], []
 
     for epoch in tqdm(range(args.epochs)):
+        global_model.train()
         batch_loss = []
 
         for batch_idx, (images, labels) in enumerate(trainloader):
@@ -102,17 +114,55 @@ if __name__ == '__main__':
         if scheduler is not None:
             scheduler.step()
 
+        current_epoch = epoch + 1
+        should_test = (
+            args.test_interval > 0 and
+            (current_epoch % args.test_interval == 0 or
+             current_epoch == args.epochs)
+        )
+        if should_test:
+            test_acc, test_loss = test_inference(
+                args, global_model, test_dataset)
+            test_epochs.append(current_epoch)
+            test_accuracy.append(test_acc)
+            test_losses.append(test_loss)
+            LOGGER.info(
+                'Test after epoch %s/%s: Loss: %.4f | Accuracy: %.2f%%',
+                current_epoch, args.epochs, test_loss, 100*test_acc)
+
+    if not test_epochs or test_epochs[-1] != args.epochs:
+        test_acc, test_loss = test_inference(args, global_model, test_dataset)
+        test_epochs.append(args.epochs)
+        test_accuracy.append(test_acc)
+        test_losses.append(test_loss)
+    else:
+        test_acc = test_accuracy[-1]
+        test_loss = test_losses[-1]
+
     # Plot loss
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     plt.figure()
-    plt.plot(range(len(epoch_loss)), epoch_loss)
-    plt.xlabel('epochs')
+    plt.plot(range(1, len(epoch_loss)+1), epoch_loss)
+    plt.xlabel('Epochs')
     plt.ylabel('Train loss')
-    plot_path = SAVE_DIR / 'nn_{}_{}_{}.png'.format(args.dataset, args.model,
-                                                    args.epochs)
-    plt.savefig(plot_path)
+    plt.title('Training Loss')
+    plt.tight_layout()
+    loss_plot_path = SAVE_DIR / f'{run_name}_loss.png'
+    plt.savefig(loss_plot_path)
+    plt.close()
+    LOGGER.info('Saved loss figure: %s', loss_plot_path)
 
-    # testing
-    test_acc, test_loss = test_inference(args, global_model, test_dataset)
+    # Plot accuracy
+    plt.figure()
+    plt.plot(test_epochs, [100*acc for acc in test_accuracy], marker='o')
+    plt.xlabel('Epochs')
+    plt.ylabel('Test accuracy (%)')
+    plt.title('Test Accuracy')
+    plt.tight_layout()
+    acc_plot_path = SAVE_DIR / f'{run_name}_acc.png'
+    plt.savefig(acc_plot_path)
+    plt.close()
+    LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
+
     LOGGER.info('Test on %s samples', len(test_dataset))
     LOGGER.info("Test Accuracy: {:.2f}%".format(100*test_acc))
