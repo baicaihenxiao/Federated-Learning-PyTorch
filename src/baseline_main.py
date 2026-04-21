@@ -153,8 +153,10 @@ if __name__ == '__main__':
     LOGGER.info('Saved loss figure: %s', loss_plot_path)
 
     # Plot accuracy
+    test_accuracy_percent = [100*acc for acc in test_accuracy]
+
     plt.figure()
-    plt.plot(test_epochs, [100*acc for acc in test_accuracy], marker='o')
+    plt.plot(test_epochs, test_accuracy_percent, marker='o')
     plt.xlabel('Epochs')
     plt.ylabel('Test accuracy (%)')
     plt.title('Test Accuracy')
@@ -163,6 +165,13 @@ if __name__ == '__main__':
     plt.savefig(acc_plot_path)
     plt.close()
     LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
+
+    LOGGER.info('Train loss array by epoch: %s', epoch_loss)
+    LOGGER.info('Test epochs array: %s', test_epochs)
+    LOGGER.info('Test accuracy array by test epoch: %s', test_accuracy)
+    LOGGER.info('Test accuracy percent array by test epoch: %s',
+                test_accuracy_percent)
+    LOGGER.info('Test loss array by test epoch: %s', test_losses)
 
     LOGGER.info('Test on %s samples', len(test_dataset))
     LOGGER.info("Test Accuracy: {:.2f}%".format(100*test_acc))
