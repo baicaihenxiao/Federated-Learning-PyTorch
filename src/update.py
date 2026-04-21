@@ -92,7 +92,10 @@ class LocalUpdate(object):
         return model.state_dict(), sum(epoch_loss) / len(epoch_loss)
 
     def inference(self, model):
-        """ Returns the inference accuracy and loss.
+        """Returns accuracy and loss on one client's local held-out split.
+
+        This is used during federated training to estimate each client's
+        validation/test performance from its own partition of the train set.
         """
 
         model.eval()
@@ -120,7 +123,10 @@ class LocalUpdate(object):
 
 
 def test_inference(args, model, test_dataset):
-    """ Returns the test accuracy and loss.
+    """Returns accuracy and loss on the global test dataset.
+
+    This evaluates the model against the official dataset test split, so it is
+    used for centralized baseline metrics and final/global federated metrics.
     """
 
     model.eval()
