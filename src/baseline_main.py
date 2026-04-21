@@ -89,7 +89,7 @@ if __name__ == '__main__':
 
     for epoch in tqdm(range(args.epochs)):
         global_model.train()
-        batch_loss = []
+        running_loss, num_seen = 0.0, 0
 
         for batch_idx, (images, labels) in enumerate(trainloader):
             images, labels = images.to(device), labels.to(device)
@@ -106,9 +106,10 @@ if __name__ == '__main__':
                         epoch+1, batch_idx * len(images),
                         len(trainloader.dataset),
                         100. * batch_idx / len(trainloader), loss.item()))
-            batch_loss.append(loss.item())
+            running_loss += loss.item() * labels.size(0)
+            num_seen += labels.size(0)
 
-        loss_avg = sum(batch_loss)/len(batch_loss)
+        loss_avg = running_loss / num_seen
         LOGGER.info('\nTrain loss: %s', loss_avg)
         epoch_loss.append(loss_avg)
         if scheduler is not None:

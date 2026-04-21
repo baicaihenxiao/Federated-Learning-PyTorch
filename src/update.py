@@ -67,7 +67,7 @@ class LocalUpdate(object):
         optimizer = get_optimizer(self.args, model)
 
         for iter in range(self.args.local_ep):
-            batch_loss = []
+            running_loss, num_seen = 0.0, 0
             for batch_idx, (images, labels) in enumerate(self.trainloader):
                 images, labels = images.to(self.device), labels.to(self.device)
 
@@ -85,8 +85,9 @@ class LocalUpdate(object):
                             100. * batch_idx / len(self.trainloader),
                             loss.item()))
                 self.logger.add_scalar('loss', loss.item())
-                batch_loss.append(loss.item())
-            epoch_loss.append(sum(batch_loss)/len(batch_loss))
+                running_loss += loss.item() * labels.size(0)
+                num_seen += labels.size(0)
+            epoch_loss.append(running_loss / num_seen)
 
         return model.state_dict(), sum(epoch_loss) / len(epoch_loss)
 
@@ -97,7 +98,7 @@ class LocalUpdate(object):
         model.eval()
         # Keep inference on the same device used for local training.
         model.to(self.device)
-        loss, total, correct = 0.0, 0.0, 0.0
+        loss, total, correct = 0.0, 0, 0
 
         with torch.no_grad():
             for batch_idx, (images, labels) in enumerate(self.testloader):
@@ -106,16 +107,16 @@ class LocalUpdate(object):
                 # Inference
                 outputs = model(images)
                 batch_loss = self.criterion(outputs, labels)
-                loss += batch_loss.item()
+                loss += batch_loss.item() * labels.size(0)
 
                 # Prediction
                 _, pred_labels = torch.max(outputs, 1)
                 pred_labels = pred_labels.view(-1)
                 correct += torch.sum(torch.eq(pred_labels, labels)).item()
-                total += len(labels)
+                total += labels.size(0)
 
         accuracy = correct/total
-        return accuracy, loss
+        return accuracy, loss/total
 
 
 def test_inference(args, model, test_dataset):
@@ -123,7 +124,7 @@ def test_inference(args, model, test_dataset):
     """
 
     model.eval()
-    loss, total, correct = 0.0, 0.0, 0.0
+    loss, total, correct = 0.0, 0, 0
 
     # Evaluate on the device where the caller placed the model.
     device = next(model.parameters()).device
@@ -138,13 +139,13 @@ def test_inference(args, model, test_dataset):
             # Inference
             outputs = model(images)
             batch_loss = criterion(outputs, labels)
-            loss += batch_loss.item()
+            loss += batch_loss.item() * labels.size(0)
 
             # Prediction
             _, pred_labels = torch.max(outputs, 1)
             pred_labels = pred_labels.view(-1)
             correct += torch.sum(torch.eq(pred_labels, labels)).item()
-            total += len(labels)
+            total += labels.size(0)
 
     accuracy = correct/total
-    return accuracy, loss
+    return accuracy, loss/total
