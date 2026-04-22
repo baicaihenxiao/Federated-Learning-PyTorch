@@ -115,6 +115,7 @@ if __name__ == '__main__':
         global_model.train()
         m = max(int(args.frac * args.num_users), 1)
         idxs_users = np.random.choice(range(args.num_users), m, replace=False)
+        selected_user_ids = [int(idx) for idx in idxs_users]
 
         for user_position, idx in enumerate(idxs_users, start=1):
             user_start_time = time.time()
@@ -167,11 +168,12 @@ if __name__ == '__main__':
             test_losses.append(test_loss)
 
         round_summary = (
-            'Round Summary : {}/{} | Selected Users: {}/{} | '
+            'Round Summary : {}/{} | Selected Users: {}/{} {} | '
             'Avg Local Train Loss: {:.6f} | Avg Client Loss: {:.6f} | '
             'Avg Client Accuracy: {:.2f}%'.format(
-                current_epoch, args.epochs, m, args.num_users, loss_avg,
-                avg_client_loss, 100*train_accuracy[-1])
+                current_epoch, args.epochs, m, args.num_users,
+                selected_user_ids, loss_avg, avg_client_loss,
+                100*train_accuracy[-1])
         )
         if should_test:
             round_summary += (
