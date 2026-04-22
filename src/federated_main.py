@@ -116,7 +116,7 @@ if __name__ == '__main__':
         global_model.train()
         m = max(int(args.frac * args.num_users), 1)
         idxs_users = np.random.choice(range(args.num_users), m, replace=False)
-        selected_user_ids = [int(idx) for idx in idxs_users]
+        selected_user_ids = sorted(int(idx) for idx in idxs_users)
 
         for user_position, idx in enumerate(idxs_users, start=1):
             user_start_time = time.time()
@@ -196,6 +196,9 @@ if __name__ == '__main__':
         test_acc = test_accuracy[-1]
         test_loss = test_losses[-1]
 
+    train_accuracy_percent = [100*acc for acc in train_accuracy]
+    test_accuracy_percent = [100*acc for acc in test_accuracy]
+
     LOGGER.info(f' \n Results after {args.epochs} global rounds of training:')
     LOGGER.info("|---- Avg Train Accuracy: {:.2f}%".format(
         100*train_accuracy[-1]))
@@ -226,11 +229,9 @@ if __name__ == '__main__':
     # Plot Accuracy curve
     plt.figure()
     plt.title('Accuracy vs Communication Rounds')
-    plt.plot(range(1, len(train_accuracy)+1),
-             [100*acc for acc in train_accuracy], color='k',
+    plt.plot(range(1, len(train_accuracy)+1), train_accuracy_percent, color='k',
              label='Avg train')
-    plt.plot(test_epochs, [100*acc for acc in test_accuracy],
-             marker='o', label='Test')
+    plt.plot(test_epochs, test_accuracy_percent, marker='o', label='Test')
     plt.ylabel('Accuracy (%)')
     plt.xlabel('Communication rounds')
     plt.legend()
@@ -239,5 +240,14 @@ if __name__ == '__main__':
     plt.savefig(acc_plot_path)
     plt.close()
     LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
+
+    LOGGER.info('Train loss array by global round: %s', train_loss)
+    LOGGER.info('Train accuracy (%) array by global round: %s',
+                train_accuracy_percent)
+    LOGGER.info('Test epochs array: %s', test_epochs)
+    LOGGER.info('Test accuracy (%) array by test epoch: %s',
+                test_accuracy_percent)
+    LOGGER.info('Test loss array by test epoch: %s', test_losses)
+
     LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
     log_git_commit('end', LOGGER)
