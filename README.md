@@ -50,7 +50,7 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--dataset:```  Default: 'cifar'. Options: 'mnist', 'fmnist', 'cifar'
 * ```--model:```    Default depends on dataset ('cnn' for MNIST/Fashion-MNIST, 'resnet18' for CIFAR-10). Options: 'mlp', 'cnn', 'resnet18'
 * ```--gpu:```      Default: None (runs on CPU). Can also be set to the specific gpu id.
-* ```--epochs:```   Number of rounds of training. Default: 50 for MNIST, 150 for CIFAR-10.
+* ```--epochs:```   Number of rounds of training. Default: 50 for MNIST, 150 for CIFAR-10. Federated MNIST non-IID defaults to 150.
 * ```--lr:```       Learning rate set to 0.01 by default.
 * ```--verbose:```  Detailed log outputs. Default: 0. Set to 1 to activate.
 * ```--seed:```     Random Seed. Default set to 1.
@@ -59,7 +59,7 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--iid:```      Distribution of data amongst users. Default set to IID. Set to 0 for non-IID.
 * ```--num_users:```Number of users. Default is 100.
 * ```--frac:```     Fraction of users to be used for federated updates. Default is 0.1.
-* ```--local_ep:``` Number of local training epochs in each user. Default is 10.
+* ```--local_ep:``` Number of local training epochs in each user. Default is 10 for MNIST IID, 1 for MNIST non-IID, and 5 for CIFAR-10.
 * ```--local_bs:``` Batch size of local updates in each user. Default is 10.
 * ```--unequal:```  Used in non-iid setting. Option to split the data amongst users equally or unequally. Default set to 0 for equal splits. Set to 1 for unequal splits.
 
@@ -86,7 +86,7 @@ The experiment involves training a global model in the federated setting.
 Federated parameters (default values):
 * ```Fraction of users (C)```: 0.1 
 * ```Local Batch size  (B)```: 10 
-* ```Local Epochs      (E)```: 10 
+* ```Local Epochs      (E)```: 10 for IID, 1 for non-IID 
 * ```Optimizer            ```: SGD 
 * ```Learning Rate        ```: 0.01 <br />
 

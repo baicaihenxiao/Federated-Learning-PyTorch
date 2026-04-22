@@ -119,7 +119,8 @@ FEDERATED_DEFAULTS = {
     },
     ('mnist', 0): {
         'iid': 0,
-        'local_ep': 10,
+        'epochs': 150,
+        'local_ep': 1,
         'local_bs': 10,
         'lr': 0.01,
         'test_interval': 1,
