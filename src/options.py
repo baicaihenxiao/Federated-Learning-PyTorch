@@ -73,6 +73,60 @@ FALLBACK_TRAINING_PRESET = {
 }
 
 
+DEFAULT_FEDERATED_ARGS = {
+    'iid': 1,
+    'local_ep': 10,
+    'local_bs': 10,
+    'test_interval': 1,
+}
+
+
+FEDERATED_DEFAULTS = {
+    ('mnist', 1): {
+        'iid': 1,
+        'local_ep': 10,
+        'local_bs': 10,
+        'lr': 0.01,
+        'test_interval': 1,
+    },
+    ('mnist', 0): {
+        'iid': 0,
+        'local_ep': 10,
+        'local_bs': 10,
+        'lr': 0.01,
+        'test_interval': 1,
+    },
+    ('cifar', 1): {
+        'iid': 1,
+        'local_ep': 5,
+        'local_bs': 32,
+        'lr': 0.03,
+        'test_interval': 1,
+    },
+    ('cifar', 0): {
+        'iid': 0,
+        'local_ep': 5,
+        'local_bs': 32,
+        'lr': 0.03,
+        'test_interval': 1,
+    },
+}
+
+
+def apply_experiment_defaults(args, experiment):
+    """Fill experiment-specific defaults before optimizer presets."""
+    defaults = DEFAULT_FEDERATED_ARGS.copy()
+    if experiment == 'federated':
+        iid = defaults['iid'] if args.iid is None else args.iid
+        defaults.update(FEDERATED_DEFAULTS.get((args.dataset, iid), {}))
+
+    for key, value in defaults.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+
+    return args
+
+
 def apply_training_preset(args):
     """Fill unset optimizer defaults from the selected dataset/model preset."""
     args.dataset = args.dataset.lower()
@@ -102,7 +156,7 @@ def apply_training_preset(args):
     return args
 
 
-def args_parser():
+def args_parser(experiment=None):
     parser = argparse.ArgumentParser()
 
     # federated arguments (Notation for the arguments followed from paper)
@@ -112,9 +166,9 @@ def args_parser():
                         help="number of users: K")
     parser.add_argument('--frac', type=float, default=0.1,
                         help='the fraction of clients: C')
-    parser.add_argument('--local_ep', type=int, default=10,
+    parser.add_argument('--local_ep', type=int, default=None,
                         help="the number of local epochs: E")
-    parser.add_argument('--local_bs', type=int, default=10,
+    parser.add_argument('--local_bs', type=int, default=None,
                         help="local batch size: B")
     parser.add_argument('--lr', type=float, default=None,
                         help='learning rate; default depends on dataset/model')
@@ -127,7 +181,7 @@ def args_parser():
     parser.add_argument('--scheduler', type=str, default=None,
                         choices=['none', 'cosine'],
                         help='learning rate scheduler for baseline training')
-    parser.add_argument('--test_interval', type=int, default=1,
+    parser.add_argument('--test_interval', type=int, default=None,
                         help='evaluate and print test accuracy every N epochs '
                         'or global rounds during training; set 0 to disable '
                         'intermediate test evaluation')
@@ -164,7 +218,7 @@ def args_parser():
                         available, otherwise CPU is used.")
     parser.add_argument('--optimizer', type=str, default='sgd',
                         choices=['sgd', 'adam'], help="type of optimizer")
-    parser.add_argument('--iid', type=int, default=1,
+    parser.add_argument('--iid', type=int, default=None,
                         help='Default set to IID. Set to 0 for non-IID.')
     parser.add_argument('--unequal', type=int, default=0,
                         help='whether to use unequal data splits for  \
@@ -173,7 +227,8 @@ def args_parser():
                         help='rounds of early stopping')
     parser.add_argument('--verbose', type=int, default=1, help='verbose')
     parser.add_argument('--seed', type=int, default=1, help='random seed')
-    args = apply_training_preset(parser.parse_args())
+    args = apply_experiment_defaults(parser.parse_args(), experiment)
+    args = apply_training_preset(args)
     if args.test_interval < 0:
         parser.error('--test_interval must be greater than or equal to 0')
     return args

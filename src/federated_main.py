@@ -52,7 +52,7 @@ if __name__ == '__main__':
     SAVE_OBJECTS_DIR.mkdir(parents=True, exist_ok=True)
     tb_logger = SummaryWriter(str(LOG_DIR))
 
-    args = args_parser()
+    args = args_parser(experiment='federated')
 
     # Resolve the device once and share it with LocalUpdate instances.
     device = get_device(args)

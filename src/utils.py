@@ -49,11 +49,44 @@ def get_logger(log_name):
 LOGGER = get_logger(__name__)
 
 
+IMPORTANT_ARG_KEYS = [
+    'dataset',
+    'model',
+    'iid',
+    'unequal',
+    'epochs',
+    'num_users',
+    'frac',
+    'local_ep',
+    'local_bs',
+    'batch_size',
+    'optimizer',
+    'lr',
+    'momentum',
+    'weight_decay',
+    'scheduler',
+    'test_interval',
+    'device',
+    'gpu',
+    'seed',
+]
+
+
 def log_args(args):
     """Log the fully resolved command-line arguments at run start."""
+    args_dict = vars(args)
+    important_keys = [key for key in IMPORTANT_ARG_KEYS if key in args_dict]
+    other_keys = sorted(key for key in args_dict if key not in important_keys)
+
     LOGGER.info('\nResolved arguments:')
-    for key, value in sorted(vars(args).items()):
-        LOGGER.info('    %s: %s', key, value)
+    LOGGER.info('Important and used parameters:')
+    for key in important_keys:
+        LOGGER.info('    %s: %s', key, args_dict[key])
+
+    LOGGER.info('')
+    LOGGER.info('Other parameters:')
+    for key in other_keys:
+        LOGGER.info('    %s: %s', key, args_dict[key])
     LOGGER.info('')
 
 
