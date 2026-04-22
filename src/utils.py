@@ -5,11 +5,13 @@
 import copy
 import logging
 import os
+import random
 import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 from torchvision import datasets, transforms
 from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal
@@ -88,6 +90,27 @@ def log_args(args):
     for key in other_keys:
         LOGGER.info('    %s: %s', key, args_dict[key])
     LOGGER.info('')
+
+
+def set_seed(seed):
+    """Seed Python, NumPy, and PyTorch RNGs; return the concrete seed used."""
+    if seed is None:
+        return None
+
+    if seed == 'random':
+        seed = random.SystemRandom().randint(0, 2**32 - 1)
+        LOGGER.info('Generated random seed: %s', seed)
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    LOGGER.info('Random seed set to %s', seed)
+    return seed
 
 
 def log_git_commit(stage, logger=None):

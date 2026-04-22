@@ -5,6 +5,28 @@
 import argparse
 
 
+MAX_RANDOM_SEED = 2**32 - 1
+
+
+def seed_value(value):
+    """Parse --seed as a fixed integer or the string 'random'."""
+    value = str(value).strip().lower()
+    if value == 'random':
+        return value
+
+    try:
+        seed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            '--seed must be an integer or "random"')
+
+    if seed < 0 or seed > MAX_RANDOM_SEED:
+        raise argparse.ArgumentTypeError(
+            f'--seed must be between 0 and {MAX_RANDOM_SEED}, or "random"')
+
+    return seed
+
+
 DEFAULT_MODELS = {
     'mnist': 'cnn',
     'fmnist': 'cnn',
@@ -226,7 +248,9 @@ def args_parser(experiment=None):
     parser.add_argument('--stopping_rounds', type=int, default=10,
                         help='rounds of early stopping')
     parser.add_argument('--verbose', type=int, default=1, help='verbose')
-    parser.add_argument('--seed', type=int, default=1, help='random seed')
+    parser.add_argument('--seed', type=seed_value, default=1,
+                        help='random seed integer, or "random" to choose a '
+                        'fresh seed for this run')
     args = apply_experiment_defaults(parser.parse_args(), experiment)
     args = apply_training_preset(args)
     if args.test_interval < 0:

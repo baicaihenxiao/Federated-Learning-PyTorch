@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from utils import (
     get_dataset, get_device, get_logger, get_optimizer, get_run_name, log_args,
-    log_git_commit,
+    log_git_commit, set_seed,
 )
 from options import args_parser
 from update import test_inference
@@ -35,6 +35,7 @@ if __name__ == '__main__':
     device = get_device(args)
     # Cache the resolved device so LocalUpdate/test helpers do not re-detect it.
     args.device = str(device)
+    args.seed = set_seed(args.seed)
     LOGGER.info('Using device: %s', device)
     log_args(args)
     run_name = get_run_name(

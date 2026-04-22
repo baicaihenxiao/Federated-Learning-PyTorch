@@ -32,7 +32,7 @@ from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
 from utils import (
     get_dataset, get_device, average_weights, get_logger, get_run_name,
-    log_args, log_git_commit,
+    log_args, log_git_commit, set_seed,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +57,7 @@ if __name__ == '__main__':
     # Resolve the device once and share it with LocalUpdate instances.
     device = get_device(args)
     args.device = str(device)
+    args.seed = set_seed(args.seed)
     LOGGER.info('Using device: %s', device)
     log_args(args)
     run_name = get_run_name(
@@ -216,7 +217,7 @@ if __name__ == '__main__':
     LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
 
     LOGGER.info('Test epochs array: %s', test_epochs)
-    LOGGER.info('Test accuracy (%) array by test epoch: %s',
+    LOGGER.info('Test accuracy percent array by test epoch: %s',
                 test_accuracy_percent)
     LOGGER.info('Test loss array by test epoch: %s', test_losses)
 
