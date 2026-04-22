@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 
 from utils import (
     get_dataset, get_device, get_logger, get_optimizer, get_run_name, log_args,
+    log_git_commit,
 )
 from options import args_parser
 from update import test_inference
@@ -27,6 +28,7 @@ LOGGER = get_logger(__name__)
 
 if __name__ == '__main__':
     start_time = time.time()
+    log_git_commit('begin', LOGGER)
 
     args = args_parser()
     # Prefer CUDA when explicitly requested; otherwise use MPS if available.
@@ -180,3 +182,4 @@ if __name__ == '__main__':
     LOGGER.info('Test on %s samples', len(test_dataset))
     LOGGER.info("Test Accuracy: {:.2f}%".format(100*test_acc))
     LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
+    log_git_commit('end', LOGGER)

@@ -6,6 +6,7 @@ import copy
 import logging
 import os
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -54,6 +55,49 @@ def log_args(args):
     for key, value in sorted(vars(args).items()):
         LOGGER.info('    %s: %s', key, value)
     LOGGER.info('')
+
+
+def log_git_commit(stage, logger=None):
+    """Log the current git branch, commit hash, author, time, and message."""
+    logger = logger or LOGGER
+    try:
+        commit_log = subprocess.check_output(
+            [
+                'git', '-C', str(PROJECT_ROOT), 'log', '-1',
+                '--format=%H%x1f%an%x1f%ad%x1f%s', '--date=iso-strict',
+            ],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        logger.warning('Run %s code commit: unavailable (%s)', stage, exc)
+        return
+
+    try:
+        branch_name = subprocess.check_output(
+            [
+                'git', '-C', str(PROJECT_ROOT), 'rev-parse',
+                '--abbrev-ref', 'HEAD',
+            ],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        branch_name = 'unavailable'
+
+    commit_parts = commit_log.split('\x1f', 3)
+    if len(commit_parts) != 4:
+        logger.warning('Run %s code commit: unavailable (%s)', stage,
+                       commit_log or 'empty git output')
+        return
+
+    commit_hash, author_name, commit_time, commit_message = commit_parts
+    if branch_name == 'HEAD':
+        branch_name = 'detached'
+    logger.info(
+        'Run %s code commit: branch=%s | msg=%s | time=%s | hash=%s | name=%s',
+        stage, branch_name, commit_message, commit_time, commit_hash,
+        author_name)
 
 
 def _format_filename_value(value):

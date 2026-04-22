@@ -32,7 +32,7 @@ from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
 from utils import (
     get_dataset, get_device, average_weights, get_logger, get_run_name,
-    log_args,
+    log_args, log_git_commit,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +44,7 @@ LOGGER = get_logger(__name__)
 
 if __name__ == '__main__':
     start_time = time.time()
+    log_git_commit('begin', LOGGER)
 
     # define paths
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -239,3 +240,4 @@ if __name__ == '__main__':
     plt.close()
     LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
     LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
+    log_git_commit('end', LOGGER)
