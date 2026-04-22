@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from utils import (
     get_dataset, get_device, get_logger, get_optimizer, get_run_name, log_args,
-    log_git_commit, set_seed,
+    log_git_commit, set_seed, format_run_time,
 )
 from options import args_parser
 from update import test_inference
@@ -182,5 +182,5 @@ if __name__ == '__main__':
 
     LOGGER.info('Test on %s samples', len(test_dataset))
     LOGGER.info("Test Accuracy: {:.2f}%".format(100*test_acc))
-    LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
+    LOGGER.info('\n Total Run Time: %s', format_run_time(time.time()-start_time))
     log_git_commit('end', LOGGER)

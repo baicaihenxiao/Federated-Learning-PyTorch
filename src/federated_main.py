@@ -32,7 +32,7 @@ from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
 from utils import (
     get_dataset, get_device, average_weights, get_logger, get_run_name,
-    log_args, log_git_commit, set_seed,
+    log_args, log_git_commit, set_seed, format_run_time,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +40,30 @@ LOG_DIR = PROJECT_ROOT / 'logs'
 SAVE_DIR = PROJECT_ROOT / 'save'
 SAVE_OBJECTS_DIR = SAVE_DIR / 'objects'
 LOGGER = get_logger(__name__)
+
+
+def format_interval(seconds):
+    seconds = int(seconds)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return '{}:{:02d}:{:02d}'.format(hours, minutes, seconds)
+    return '{:02d}:{:02d}'.format(minutes, seconds)
+
+
+def format_round_progress(current_round, total_rounds, elapsed_time):
+    if current_round <= 0 or total_rounds <= 0:
+        return '0% | 0/{} [00:00<?, 0.00s/it]'.format(total_rounds)
+
+    current_round = min(current_round, total_rounds)
+    percent_complete = 100.0 * current_round / total_rounds
+    seconds_per_round = elapsed_time / current_round
+    remaining_time = seconds_per_round * (total_rounds - current_round)
+
+    return '{:.0f}% | {}/{} [{}<{}, {:.2f}s/it]'.format(
+        percent_complete, current_round, total_rounds,
+        format_interval(elapsed_time), format_interval(remaining_time),
+        seconds_per_round)
 
 
 if __name__ == '__main__':
@@ -151,6 +175,12 @@ if __name__ == '__main__':
             test_accuracy.append(test_acc)
             test_losses.append(test_loss)
 
+        now = time.time()
+        round_time = now - round_start_time
+        elapsed_time = now - start_time
+        progress_summary = format_round_progress(
+            current_epoch, args.epochs, elapsed_time)
+
         round_summary = (
             'Round Summary : {}/{} | Selected Users: {}/{} {}'.format(
                 current_epoch, args.epochs, m, args.num_users,
@@ -162,8 +192,10 @@ if __name__ == '__main__':
                     test_loss, 100*test_acc)
             )
         round_summary += (
-            ' | Round Time: {:.2f}s | Elapsed Time: {:.2f}s'.format(
-                time.time() - round_start_time, time.time() - start_time)
+            ' | Progress: {} | Round Time: {} | Elapsed Time: {}'
+            .format(
+                progress_summary, format_run_time(round_time),
+                format_run_time(elapsed_time))
         )
         LOGGER.info(round_summary)
 
@@ -221,5 +253,5 @@ if __name__ == '__main__':
                 test_accuracy_percent)
     LOGGER.info('Test loss array by test epoch: %s', test_losses)
 
-    LOGGER.info('\n Total Run Time: {0:0.4f}'.format(time.time()-start_time))
+    LOGGER.info('\n Total Run Time: %s', format_run_time(time.time()-start_time))
     log_git_commit('end', LOGGER)

@@ -48,6 +48,13 @@ def get_logger(log_name):
     return logger
 
 
+def format_run_time(seconds):
+    seconds = int(seconds)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return '{}:{:02d}:{:02d}'.format(hours, minutes, seconds)
+
+
 LOGGER = get_logger(__name__)
 
 
