@@ -104,13 +104,12 @@ if __name__ == '__main__':
     global_weights = global_model.state_dict()
 
     # Training
-    train_loss, train_accuracy = [], []
     test_epochs, test_accuracy, test_losses = [], [], []
 
     for epoch in tqdm(range(args.epochs)):
         round_start_time = time.time()
         current_epoch = epoch + 1
-        local_weights, local_losses = [], []
+        local_weights = []
         LOGGER.info(f'\n | Global Training Round : {current_epoch}/{args.epochs} |\n')
 
         global_model.train()
@@ -122,39 +121,22 @@ if __name__ == '__main__':
             user_start_time = time.time()
             local_model = LocalUpdate(args=args, dataset=train_dataset,
                                       idxs=user_groups[idx], logger=tb_logger)
-            w, loss = local_model.update_weights(
+            w, _ = local_model.update_weights(
                 model=copy.deepcopy(global_model),
                 global_round=current_epoch)
             local_weights.append(copy.deepcopy(w))
-            local_losses.append(copy.deepcopy(loss))
             if args.verbose:
                 LOGGER.info(
                     '| Global Round : %s/%s | User : %s/%s (idx: %s) | '
-                    'Local Loss: %.6f | User Time: %.2fs',
+                    'User Time: %.2fs',
                     current_epoch, args.epochs, user_position, m, int(idx),
-                    loss, time.time() - user_start_time)
+                    time.time() - user_start_time)
 
         # update global weights
         global_weights = average_weights(local_weights)
 
         # update global weights
         global_model.load_state_dict(global_weights)
-
-        loss_avg = sum(local_losses) / len(local_losses)
-        train_loss.append(loss_avg)
-
-        # Calculate avg training accuracy over all users at every epoch
-        list_acc, list_loss = [], []
-        global_model.eval()
-        for c in range(args.num_users):
-            # Evaluate every client's full local partition, not just sampled users.
-            local_model = LocalUpdate(args=args, dataset=train_dataset,
-                                      idxs=user_groups[c], logger=tb_logger)
-            acc, loss = local_model.inference(model=global_model)
-            list_acc.append(acc)
-            list_loss.append(loss)
-        train_accuracy.append(sum(list_acc)/len(list_acc))
-        avg_client_loss = sum(list_loss) / len(list_loss)
 
         should_test = (
             args.test_interval > 0 and
@@ -169,12 +151,9 @@ if __name__ == '__main__':
             test_losses.append(test_loss)
 
         round_summary = (
-            'Round Summary : {}/{} | Selected Users: {}/{} {} | '
-            'Avg Local Train Loss: {:.6f} | Avg Client Loss: {:.6f} | '
-            'Avg Client Accuracy: {:.2f}%'.format(
+            'Round Summary : {}/{} | Selected Users: {}/{} {}'.format(
                 current_epoch, args.epochs, m, args.num_users,
-                selected_user_ids, loss_avg, avg_client_loss,
-                100*train_accuracy[-1])
+                selected_user_ids)
         )
         if should_test:
             round_summary += (
@@ -196,15 +175,12 @@ if __name__ == '__main__':
         test_acc = test_accuracy[-1]
         test_loss = test_losses[-1]
 
-    train_accuracy_percent = [100*acc for acc in train_accuracy]
     test_accuracy_percent = [100*acc for acc in test_accuracy]
 
     LOGGER.info(f' \n Results after {args.epochs} global rounds of training:')
-    LOGGER.info("|---- Avg Train Accuracy: {:.2f}%".format(
-        100*train_accuracy[-1]))
     LOGGER.info("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
 
-    # Saving the objects train_loss and train_accuracy:
+    # Saving the test metrics:
     file_name = SAVE_OBJECTS_DIR / (
         '{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}].pkl'.format(
             args.dataset, args.model, args.epochs, args.frac, args.iid,
@@ -212,13 +188,13 @@ if __name__ == '__main__':
     )
 
     with open(file_name, 'wb') as f:
-        pickle.dump([train_loss, train_accuracy], f)
+        pickle.dump([test_epochs, test_losses, test_accuracy], f)
 
-    # Plot Loss curve
+    # Plot Test Loss curve
     plt.figure()
-    plt.title('Training Loss vs Communication Rounds')
-    plt.plot(range(1, len(train_loss)+1), train_loss, color='r')
-    plt.ylabel('Training loss')
+    plt.title('Test Loss vs Communication Rounds')
+    plt.plot(test_epochs, test_losses, color='r', marker='o')
+    plt.ylabel('Test loss')
     plt.xlabel('Communication rounds')
     plt.tight_layout()
     loss_plot_path = SAVE_DIR / f'{run_name}_loss.png'
@@ -226,11 +202,9 @@ if __name__ == '__main__':
     plt.close()
     LOGGER.info('Saved loss figure: %s', loss_plot_path)
 
-    # Plot Accuracy curve
+    # Plot Test Accuracy curve
     plt.figure()
-    plt.title('Accuracy vs Communication Rounds')
-    plt.plot(range(1, len(train_accuracy)+1), train_accuracy_percent, color='k',
-             label='Avg train')
+    plt.title('Test Accuracy vs Communication Rounds')
     plt.plot(test_epochs, test_accuracy_percent, marker='o', label='Test')
     plt.ylabel('Accuracy (%)')
     plt.xlabel('Communication rounds')
@@ -241,9 +215,6 @@ if __name__ == '__main__':
     plt.close()
     LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
 
-    LOGGER.info('Train loss array by global round: %s', train_loss)
-    LOGGER.info('Train accuracy (%) array by global round: %s',
-                train_accuracy_percent)
     LOGGER.info('Test epochs array: %s', test_epochs)
     LOGGER.info('Test accuracy (%) array by test epoch: %s',
                 test_accuracy_percent)
