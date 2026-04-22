@@ -40,20 +40,16 @@ class LocalUpdate(object):
 
     def train_val_test(self, dataset, idxs):
         """
-        Returns train, validation and test dataloaders for a given dataset
-        and user indexes.
+        Returns dataloaders over all local data for a given client.
         """
-        # split indexes for train, validation, and test (80, 10, 10)
-        idxs_train = idxs[:int(0.8*len(idxs))]
-        idxs_val = idxs[int(0.8*len(idxs)):int(0.9*len(idxs))]
-        idxs_test = idxs[int(0.9*len(idxs)):]
+        eval_batch_size = max(1, min(len(idxs), self.args.local_bs))
 
-        trainloader = DataLoader(DatasetSplit(dataset, idxs_train),
+        trainloader = DataLoader(DatasetSplit(dataset, idxs),
                                  batch_size=self.args.local_bs, shuffle=True)
-        validloader = DataLoader(DatasetSplit(dataset, idxs_val),
-                                 batch_size=int(len(idxs_val)/10), shuffle=False)
-        testloader = DataLoader(DatasetSplit(dataset, idxs_test),
-                                batch_size=int(len(idxs_test)/10), shuffle=False)
+        validloader = DataLoader(DatasetSplit(dataset, idxs),
+                                 batch_size=eval_batch_size, shuffle=False)
+        testloader = DataLoader(DatasetSplit(dataset, idxs),
+                                batch_size=eval_batch_size, shuffle=False)
         return trainloader, validloader, testloader
 
     def update_weights(self, model, global_round):
@@ -85,11 +81,7 @@ class LocalUpdate(object):
         return model.state_dict(), sum(epoch_loss) / len(epoch_loss)
 
     def inference(self, model):
-        """Returns accuracy and loss on one client's local held-out split.
-
-        This is used during federated training to estimate each client's
-        validation/test performance from its own partition of the train set.
-        """
+        """Returns accuracy and loss on one client's full local partition."""
 
         model.eval()
         # Keep inference on the same device used for local training.

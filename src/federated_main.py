@@ -145,7 +145,7 @@ if __name__ == '__main__':
         list_acc, list_loss = [], []
         global_model.eval()
         for c in range(args.num_users):
-            # Evaluate every client's held-out split, not just the last sampled one.
+            # Evaluate every client's full local partition, not just sampled users.
             local_model = LocalUpdate(args=args, dataset=train_dataset,
                                       idxs=user_groups[c], logger=tb_logger)
             acc, loss = local_model.inference(model=global_model)

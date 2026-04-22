@@ -112,11 +112,8 @@ Federated parameters (default values):
 
 ---
 
-`src.update.LocalUpdate.train_val_test` 100 个人，每个人 600 样本，480 用来训练，80 validate，80 test
+`src.update.LocalUpdate.train_val_test` 每个客户端使用自己的全部本地样本训练，不再拆成 train/validate/test。
 ```python
-idxs_train = idxs[:int(0.8*len(idxs))]
-idxs_val = idxs[int(0.8*len(idxs)):int(0.9*len(idxs))]
-idxs_test = idxs[int(0.9*len(idxs)):]
+trainloader = DataLoader(DatasetSplit(dataset, idxs),
+                         batch_size=self.args.local_bs, shuffle=True)
 ```
-
-`validate` 这个没看到用
