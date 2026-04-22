@@ -33,6 +33,12 @@ DEFAULT_MODELS = {
     'cifar': 'resnet18',
 }
 
+DEFAULT_EPOCHS = {
+    'mnist': 50,
+    'fmnist': 50,
+    'cifar': 150,
+}
+
 
 TRAINING_PRESETS = {
     ('cifar', 'resnet18'): {
@@ -161,6 +167,8 @@ def apply_training_preset(args):
         (args.dataset, args.model), FALLBACK_TRAINING_PRESET)
 
     # Keep explicit command-line values; only fill values the user omitted.
+    if args.epochs is None:
+        args.epochs = DEFAULT_EPOCHS.get(args.dataset, 50)
     if args.lr is None:
         if args.optimizer == 'adam':
             args.lr = preset['adam_lr']
@@ -182,8 +190,9 @@ def args_parser(experiment=None):
     parser = argparse.ArgumentParser()
 
     # federated arguments (Notation for the arguments followed from paper)
-    parser.add_argument('--epochs', type=int, default=50,
-                        help="number of rounds of training")
+    parser.add_argument('--epochs', type=int, default=None,
+                        help='number of rounds of training; default depends '
+                        'on dataset')
     parser.add_argument('--num_users', type=int, default=100,
                         help="number of users: K")
     parser.add_argument('--frac', type=float, default=0.1,
