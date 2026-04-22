@@ -52,7 +52,7 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--gpu:```      Default: None (runs on CPU). Can also be set to the specific gpu id.
 * ```--epochs:```   Number of rounds of training.
 * ```--lr:```       Learning rate set to 0.01 by default.
-* ```--verbose:```  Detailed log outputs. Activated by default, set to 0 to deactivate.
+* ```--verbose:```  Detailed log outputs. Default: 0. Set to 1 to activate.
 * ```--seed:```     Random Seed. Default set to 1.
 
 #### Federated Parameters
