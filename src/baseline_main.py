@@ -3,7 +3,6 @@
 # Python version: 3.6
 
 
-from tqdm import tqdm
 from pathlib import Path
 import time
 import matplotlib
@@ -93,7 +92,7 @@ if __name__ == '__main__':
     epoch_loss = []
     test_epochs, test_accuracy, test_losses = [], [], []
 
-    for epoch in tqdm(range(args.epochs)):
+    for epoch in range(args.epochs):
         global_model.train()
         running_loss, num_seen = 0.0, 0
 

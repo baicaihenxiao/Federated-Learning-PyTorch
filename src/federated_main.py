@@ -8,7 +8,6 @@ import time
 import pickle
 from pathlib import Path
 import numpy as np
-from tqdm import tqdm
 
 import matplotlib
 matplotlib.use('Agg')
@@ -131,7 +130,7 @@ if __name__ == '__main__':
     # Training
     test_epochs, test_accuracy, test_losses = [], [], []
 
-    for epoch in tqdm(range(args.epochs)):
+    for epoch in range(args.epochs):
         round_start_time = time.time()
         current_epoch = epoch + 1
         local_weights = []
