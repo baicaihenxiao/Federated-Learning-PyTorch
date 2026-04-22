@@ -7,6 +7,22 @@ import numpy as np
 from torchvision import datasets, transforms
 
 
+def _dataset_labels(dataset):
+    """Return labels from torchvision datasets across API versions."""
+    if hasattr(dataset, 'targets'):
+        labels = dataset.targets
+    elif hasattr(dataset, 'train_labels'):
+        labels = dataset.train_labels
+    else:
+        raise AttributeError(
+            f'{type(dataset).__name__} does not expose targets/train_labels')
+
+    if hasattr(labels, 'detach'):
+        labels = labels.detach().cpu().numpy()
+
+    return np.asarray(labels)
+
+
 def mnist_iid(dataset, num_users):
     """
     Sample I.I.D. client data from MNIST dataset
@@ -35,7 +51,7 @@ def mnist_noniid(dataset, num_users):
     idx_shard = [i for i in range(num_shards)]
     dict_users = {i: np.array([]) for i in range(num_users)}
     idxs = np.arange(num_shards*num_imgs)
-    labels = dataset.train_labels.numpy()
+    labels = _dataset_labels(dataset)
 
     # sort labels
     idxs_labels = np.vstack((idxs, labels))
@@ -66,7 +82,7 @@ def mnist_noniid_unequal(dataset, num_users):
     idx_shard = [i for i in range(num_shards)]
     dict_users = {i: np.array([]) for i in range(num_users)}
     idxs = np.arange(num_shards*num_imgs)
-    labels = dataset.train_labels.numpy()
+    labels = _dataset_labels(dataset)
 
     # sort labels
     idxs_labels = np.vstack((idxs, labels))
@@ -169,8 +185,7 @@ def cifar_noniid(dataset, num_users):
     idx_shard = [i for i in range(num_shards)]
     dict_users = {i: np.array([]) for i in range(num_users)}
     idxs = np.arange(num_shards*num_imgs)
-    # labels = dataset.train_labels.numpy()
-    labels = np.array(dataset.train_labels)
+    labels = _dataset_labels(dataset)
 
     # sort labels
     idxs_labels = np.vstack((idxs, labels))
