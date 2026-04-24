@@ -4,6 +4,7 @@
 
 
 import copy
+import math
 import time
 import pickle
 from pathlib import Path
@@ -65,6 +66,17 @@ def format_round_progress(current_round, total_rounds, elapsed_time):
         seconds_per_round)
 
 
+def get_round_lr(args, current_round):
+    if args.scheduler != 'cosine':
+        return args.lr
+
+    if args.epochs <= 1:
+        return args.lr
+
+    progress = (current_round - 1) / (args.epochs - 1)
+    return 0.5 * args.lr * (1 + math.cos(math.pi * progress))
+
+
 if __name__ == '__main__':
     start_time = time.time()
     log_git_commit('begin', LOGGER)
@@ -87,6 +99,8 @@ if __name__ == '__main__':
         args,
         'fed',
         ['dataset', 'model', 'epochs', 'num_users', 'frac', 'iid',
+         'norm', 'cifar_partition', 'dirichlet_alpha',
+         'dirichlet_min_size', 'dirichlet_balance', 'cifar_shards_per_user',
          'local_ep', 'local_bs', 'optimizer', 'lr', 'test_interval'],
     )
 
@@ -129,11 +143,14 @@ if __name__ == '__main__':
 
     # Training
     test_epochs, test_accuracy, test_losses = [], [], []
+    best_test_acc, best_test_epoch = 0.0, 0
 
     for epoch in range(args.epochs):
         round_start_time = time.time()
         current_epoch = epoch + 1
         local_weights = []
+        local_sample_counts = []
+        args.current_lr = get_round_lr(args, current_epoch)
         LOGGER.info(f'\n | Global Training Round : {current_epoch}/{args.epochs} |\n')
 
         global_model.train()
@@ -149,6 +166,7 @@ if __name__ == '__main__':
                 model=copy.deepcopy(global_model),
                 global_round=current_epoch)
             local_weights.append(copy.deepcopy(w))
+            local_sample_counts.append(len(user_groups[idx]))
             if args.verbose:
                 LOGGER.info(
                     '| Global Round : %s/%s | User : %s/%s (idx: %s) | '
@@ -157,7 +175,7 @@ if __name__ == '__main__':
                     time.time() - user_start_time)
 
         # update global weights
-        global_weights = average_weights(local_weights)
+        global_weights = average_weights(local_weights, local_sample_counts)
 
         # update global weights
         global_model.load_state_dict(global_weights)
@@ -173,6 +191,9 @@ if __name__ == '__main__':
             test_epochs.append(current_epoch)
             test_accuracy.append(test_acc)
             test_losses.append(test_loss)
+            if test_acc > best_test_acc:
+                best_test_acc = test_acc
+                best_test_epoch = current_epoch
 
         now = time.time()
         round_time = now - round_start_time
@@ -187,13 +208,15 @@ if __name__ == '__main__':
         )
         if should_test:
             round_summary += (
-                ' | Test Loss: {:.4f} | Test Accuracy: {:.2f}%'.format(
-                    test_loss, 100*test_acc)
+                ' | Test Loss: {:.4f} | Test Accuracy: {:.2f}% | '
+                'Best Accuracy: {:.2f}% @ Round {}'.format(
+                    test_loss, 100*test_acc, 100*best_test_acc,
+                    best_test_epoch)
             )
         round_summary += (
-            ' | Progress: {} | Round Time: {} | Elapsed Time: {}'
+            ' | LR: {:.6f} | Progress: {} | Round Time: {} | Elapsed Time: {}'
             .format(
-                progress_summary, format_run_time(round_time),
+                args.current_lr, progress_summary, format_run_time(round_time),
                 format_run_time(elapsed_time))
         )
         LOGGER.info(round_summary)
@@ -203,6 +226,9 @@ if __name__ == '__main__':
         test_epochs.append(args.epochs)
         test_accuracy.append(test_acc)
         test_losses.append(test_loss)
+        if test_acc > best_test_acc:
+            best_test_acc = test_acc
+            best_test_epoch = args.epochs
     else:
         test_acc = test_accuracy[-1]
         test_loss = test_losses[-1]
@@ -211,13 +237,11 @@ if __name__ == '__main__':
 
     LOGGER.info(f' \n Results after {args.epochs} global rounds of training:')
     LOGGER.info("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
+    LOGGER.info("|---- Best Test Accuracy: {:.2f}% @ Round {}".format(
+        100*best_test_acc, best_test_epoch))
 
     # Saving the test metrics:
-    file_name = SAVE_OBJECTS_DIR / (
-        '{}_{}_{}_C[{}]_iid[{}]_E[{}]_B[{}].pkl'.format(
-            args.dataset, args.model, args.epochs, args.frac, args.iid,
-            args.local_ep, args.local_bs)
-    )
+    file_name = SAVE_OBJECTS_DIR / f'{run_name}.pkl'
 
     with open(file_name, 'wb') as f:
         pickle.dump([test_epochs, test_losses, test_accuracy], f)

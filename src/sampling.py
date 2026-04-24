@@ -174,32 +174,125 @@ def cifar_iid(dataset, num_users):
     return dict_users
 
 
-def cifar_noniid(dataset, num_users):
+def cifar_noniid(dataset, num_users, shards_per_user=2):
     """
     Sample non-I.I.D client data from CIFAR10 dataset
     :param dataset:
     :param num_users:
+    :param shards_per_user: number of label-sorted shards per user. Larger
+        values keep equal data volume per user while reducing label skew.
     :return:
     """
-    num_shards, num_imgs = 200, 250
+    if shards_per_user < 1:
+        raise ValueError('shards_per_user must be at least 1')
+
+    num_shards = num_users * shards_per_user
     idx_shard = [i for i in range(num_shards)]
-    dict_users = {i: np.array([]) for i in range(num_users)}
-    idxs = np.arange(num_shards*num_imgs)
+    dict_users = {i: np.array([], dtype=np.int64) for i in range(num_users)}
+    idxs = np.arange(len(dataset))
     labels = _dataset_labels(dataset)
 
     # sort labels
     idxs_labels = np.vstack((idxs, labels))
     idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
     idxs = idxs_labels[0, :]
+    shards = np.array_split(idxs, num_shards)
 
-    # divide and assign
+    # Divide and assign label-sorted shards. With the CIFAR-10 default
+    # num_users=100, shards_per_user=5 gives 100 images/shard and 500/user.
     for i in range(num_users):
-        rand_set = set(np.random.choice(idx_shard, 2, replace=False))
-        idx_shard = list(set(idx_shard) - rand_set)
-        for rand in rand_set:
+        rand_set = set(np.random.choice(idx_shard, shards_per_user,
+                                        replace=False))
+        idx_shard = [idx for idx in idx_shard if idx not in rand_set]
+        for rand in sorted(rand_set):
             dict_users[i] = np.concatenate(
-                (dict_users[i], idxs[rand*num_imgs:(rand+1)*num_imgs]), axis=0)
+                (dict_users[i], shards[rand]), axis=0)
     return dict_users
+
+
+def cifar_noniid_dirichlet(dataset, num_users, alpha=0.5, min_size=10,
+                           balance=False):
+    """
+    Sample non-I.I.D. CIFAR10 client data with Dirichlet label skew.
+
+    The initial allocation follows the standard per-class Dirichlet partitioning
+    strategy used in many FL baselines. Set balance=True only when you
+    explicitly want to rebalance clients back to near-equal sample counts after
+    the Dirichlet draw.
+    """
+    if alpha <= 0:
+        raise ValueError('alpha must be greater than 0')
+    if min_size < 0:
+        raise ValueError('min_size must be greater than or equal to 0')
+
+    labels = _dataset_labels(dataset)
+    num_classes = int(labels.max()) + 1
+    min_client_size = 0
+
+    while min_client_size < min_size:
+        idx_batch = [[] for _ in range(num_users)]
+        for class_id in range(num_classes):
+            idx_class = np.where(labels == class_id)[0]
+            np.random.shuffle(idx_class)
+
+            proportions = np.random.dirichlet(np.repeat(alpha, num_users))
+            split_points = (np.cumsum(proportions) * len(idx_class)).astype(int)
+            split_points = split_points[:-1]
+
+            for idx_user, idx_split in zip(
+                    idx_batch, np.split(idx_class, split_points)):
+                idx_user.extend(idx_split.tolist())
+
+        min_client_size = min(len(idx_user) for idx_user in idx_batch)
+
+    if balance:
+        _rebalance_user_indices(idx_batch, len(dataset))
+
+    for indices in idx_batch:
+        np.random.shuffle(indices)
+
+    return {
+        user_id: np.asarray(indices, dtype=np.int64)
+        for user_id, indices in enumerate(idx_batch)
+    }
+
+
+def _rebalance_user_indices(idx_batch, total_items):
+    num_users = len(idx_batch)
+    base_size = total_items // num_users
+    remainder = total_items % num_users
+    target_sizes = [
+        base_size + (1 if user_id < remainder else 0)
+        for user_id in range(num_users)
+    ]
+
+    for indices in idx_batch:
+        np.random.shuffle(indices)
+
+    underfull = [
+        user_id for user_id, indices in enumerate(idx_batch)
+        if len(indices) < target_sizes[user_id]
+    ]
+    overfull = [
+        user_id for user_id, indices in enumerate(idx_batch)
+        if len(indices) > target_sizes[user_id]
+    ]
+
+    under_pos, over_pos = 0, 0
+    while under_pos < len(underfull) and over_pos < len(overfull):
+        under_id = underfull[under_pos]
+        over_id = overfull[over_pos]
+        needed = target_sizes[under_id] - len(idx_batch[under_id])
+        extra = len(idx_batch[over_id]) - target_sizes[over_id]
+        move_count = min(needed, extra)
+
+        idx_batch[under_id].extend(idx_batch[over_id][-move_count:])
+        del idx_batch[over_id][-move_count:]
+
+        if len(idx_batch[under_id]) == target_sizes[under_id]:
+            under_pos += 1
+        if len(idx_batch[over_id]) == target_sizes[over_id]:
+            over_pos += 1
 
 
 if __name__ == '__main__':

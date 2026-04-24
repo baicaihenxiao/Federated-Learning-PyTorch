@@ -48,6 +48,7 @@ TRAINING_PRESETS = {
         'weight_decay': 5e-4,
         'batch_size': 128,
         'scheduler': 'cosine',
+        'norm': 'batch_norm',
     },
     ('cifar', 'cnn'): {
         'sgd_lr': 0.01,
@@ -56,6 +57,7 @@ TRAINING_PRESETS = {
         'weight_decay': 5e-4,
         'batch_size': 128,
         'scheduler': 'cosine',
+        'norm': 'batch_norm',
     },
     ('mnist', 'cnn'): {
         'sgd_lr': 0.01,
@@ -64,6 +66,7 @@ TRAINING_PRESETS = {
         'weight_decay': 0.0,
         'batch_size': 64,
         'scheduler': 'none',
+        'norm': 'batch_norm',
     },
     ('mnist', 'mlp'): {
         'sgd_lr': 0.01,
@@ -72,6 +75,7 @@ TRAINING_PRESETS = {
         'weight_decay': 0.0,
         'batch_size': 64,
         'scheduler': 'none',
+        'norm': 'batch_norm',
     },
     ('fmnist', 'cnn'): {
         'sgd_lr': 0.01,
@@ -80,6 +84,7 @@ TRAINING_PRESETS = {
         'weight_decay': 1e-4,
         'batch_size': 64,
         'scheduler': 'none',
+        'norm': 'batch_norm',
     },
     ('fmnist', 'mlp'): {
         'sgd_lr': 0.01,
@@ -88,6 +93,7 @@ TRAINING_PRESETS = {
         'weight_decay': 1e-4,
         'batch_size': 64,
         'scheduler': 'none',
+        'norm': 'batch_norm',
     },
 }
 
@@ -98,6 +104,7 @@ FALLBACK_TRAINING_PRESET = {
     'weight_decay': 0.0,
     'batch_size': 64,
     'scheduler': 'none',
+    'norm': 'batch_norm',
 }
 
 
@@ -134,6 +141,12 @@ FEDERATED_DEFAULTS = {
     },
     ('cifar', 0): {
         'iid': 0,
+        'norm': 'group_norm',
+        'cifar_partition': 'dirichlet',
+        'cifar_shards_per_user': 5,
+        'dirichlet_alpha': 0.5,
+        'dirichlet_min_size': 10,
+        'dirichlet_balance': 0,
         'local_ep': 5,
         'local_bs': 32,
         'lr': 0.03,
@@ -183,6 +196,18 @@ def apply_training_preset(args):
         args.batch_size = preset['batch_size']
     if args.scheduler is None:
         args.scheduler = preset['scheduler']
+    if args.norm is None:
+        args.norm = preset['norm']
+    if args.cifar_partition is None:
+        args.cifar_partition = 'shard'
+    if args.cifar_shards_per_user is None:
+        args.cifar_shards_per_user = 2
+    if args.dirichlet_alpha is None:
+        args.dirichlet_alpha = 0.5
+    if args.dirichlet_min_size is None:
+        args.dirichlet_min_size = 10
+    if args.dirichlet_balance is None:
+        args.dirichlet_balance = 0
 
     return args
 
@@ -212,7 +237,7 @@ def args_parser(experiment=None):
                         help='batch size for centralized baseline training')
     parser.add_argument('--scheduler', type=str, default=None,
                         choices=['none', 'cosine'],
-                        help='learning rate scheduler for baseline training')
+                        help='learning rate scheduler')
     parser.add_argument('--test_interval', type=int, default=None,
                         help='evaluate and print test accuracy every N epochs '
                         'or global rounds during training; set 0 to disable '
@@ -230,8 +255,11 @@ def args_parser(experiment=None):
                         use for convolution')
     parser.add_argument('--num_channels', type=int, default=1, help="number \
                         of channels of imgs")
-    parser.add_argument('--norm', type=str, default='batch_norm',
-                        help="batch_norm, layer_norm, or None")
+    parser.add_argument('--norm', type=str.lower, default=None,
+                        choices=['batch_norm', 'group_norm', 'layer_norm',
+                                 'none'],
+                        help='normalization layer; default depends on '
+                        'dataset/model and federated setting')
     parser.add_argument('--num_filters', type=int, default=32,
                         help="number of filters for conv nets -- 32 for \
                         mini-imagenet, 64 for omiglot.")
@@ -255,6 +283,23 @@ def args_parser(experiment=None):
     parser.add_argument('--unequal', type=int, default=0,
                         help='whether to use unequal data splits for  \
                         non-i.i.d setting (use 0 for equal splits)')
+    parser.add_argument('--cifar_shards_per_user', type=int, default=None,
+                        help='number of label-sorted CIFAR shards assigned to '
+                        'each user in non-IID shard sampling; larger values '
+                        'soften label skew')
+    parser.add_argument('--cifar_partition', type=str.lower, default=None,
+                        choices=['shard', 'dirichlet'],
+                        help='CIFAR non-IID partition strategy')
+    parser.add_argument('--dirichlet_alpha', type=float, default=None,
+                        help='Dirichlet concentration for non-IID label skew; '
+                        'smaller values are more heterogeneous')
+    parser.add_argument('--dirichlet_min_size', type=int, default=None,
+                        help='minimum samples per client before optional '
+                        'Dirichlet rebalancing')
+    parser.add_argument('--dirichlet_balance', type=int, default=None,
+                        choices=[0, 1],
+                        help='set 0 for standard Dirichlet client sizes, or 1 '
+                        'to rebalance clients back toward equal sample counts')
     parser.add_argument('--stopping_rounds', type=int, default=10,
                         help='rounds of early stopping')
     parser.add_argument('--verbose', type=int, default=0, help='verbose')
@@ -265,4 +310,10 @@ def args_parser(experiment=None):
     args = apply_training_preset(args)
     if args.test_interval < 0:
         parser.error('--test_interval must be greater than or equal to 0')
+    if args.cifar_shards_per_user < 1:
+        parser.error('--cifar_shards_per_user must be at least 1')
+    if args.dirichlet_alpha <= 0:
+        parser.error('--dirichlet_alpha must be greater than 0')
+    if args.dirichlet_min_size < 0:
+        parser.error('--dirichlet_min_size must be greater than or equal to 0')
     return args

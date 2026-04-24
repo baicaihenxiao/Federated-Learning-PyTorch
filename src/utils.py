@@ -3,6 +3,7 @@
 # Python version: 3.6
 
 import copy
+import hashlib
 import logging
 import os
 import random
@@ -15,7 +16,7 @@ import numpy as np
 import torch
 from torchvision import datasets, transforms
 from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal
-from sampling import cifar_iid, cifar_noniid
+from sampling import cifar_iid, cifar_noniid, cifar_noniid_dirichlet
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -74,6 +75,12 @@ IMPORTANT_ARG_KEYS = [
     'momentum',
     'weight_decay',
     'scheduler',
+    'norm',
+    'cifar_partition',
+    'cifar_shards_per_user',
+    'dirichlet_alpha',
+    'dirichlet_min_size',
+    'dirichlet_balance',
     'test_interval',
     'device',
     'gpu',
@@ -168,16 +175,59 @@ def _format_filename_value(value):
         return 'none'
     value = str(value).strip().lower().replace('.', 'p')
     value = re.sub(r'[^a-z0-9_-]+', '-', value)
-    return value.strip('-')
+    value = value.strip('-')
+    return FILENAME_VALUE_ALIASES.get(value, value)
 
 
-def get_run_name(args, prefix, fields):
+FILENAME_FIELD_ALIASES = {
+    'dataset': 'ds',
+    'model': 'm',
+    'epochs': 'ep',
+    'num_users': 'k',
+    'frac': 'c',
+    'local_ep': 'le',
+    'local_bs': 'lb',
+    'batch_size': 'bs',
+    'optimizer': 'opt',
+    'scheduler': 'sch',
+    'test_interval': 'ti',
+    'cifar_partition': 'part',
+    'cifar_shards_per_user': 's',
+    'dirichlet_alpha': 'a',
+    'dirichlet_min_size': 'min',
+    'dirichlet_balance': 'bal',
+}
+
+
+FILENAME_VALUE_ALIASES = {
+    'batch_norm': 'bn',
+    'group_norm': 'gn',
+    'layer_norm': 'ln',
+    'dirichlet': 'dir',
+    'shard': 'shard',
+}
+
+
+def _format_filename_field(field):
+    return FILENAME_FIELD_ALIASES.get(field, field)
+
+
+def get_run_name(args, prefix, fields, max_length=180):
     """Build a timestamped, argument-rich name for run artifacts."""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     parts = [timestamp, prefix]
     for field in fields:
-        parts.append(f'{field}-{_format_filename_value(getattr(args, field))}')
-    return '_'.join(parts)
+        field_name = _format_filename_field(field)
+        field_value = _format_filename_value(getattr(args, field))
+        parts.append(f'{field_name}-{field_value}')
+    run_name = '_'.join(parts)
+
+    if len(run_name) <= max_length:
+        return run_name
+
+    digest = hashlib.sha1(run_name.encode('utf-8')).hexdigest()[:10]
+    prefix_length = max_length - len(digest) - 1
+    return f'{run_name[:prefix_length].rstrip("_-")}-{digest}'
 
 
 def get_device(args):
@@ -211,13 +261,14 @@ def get_device(args):
 
 def get_optimizer(args, model):
     """Build the configured optimizer for centralized and local training."""
+    lr = getattr(args, 'current_lr', args.lr)
     if args.optimizer == 'sgd':
         # CIFAR ResNet baselines typically need momentum and weight decay.
-        return torch.optim.SGD(model.parameters(), lr=args.lr,
+        return torch.optim.SGD(model.parameters(), lr=lr,
                                momentum=args.momentum,
                                weight_decay=args.weight_decay)
     if args.optimizer == 'adam':
-        return torch.optim.Adam(model.parameters(), lr=args.lr,
+        return torch.optim.Adam(model.parameters(), lr=lr,
                                 weight_decay=args.weight_decay)
 
     raise ValueError(f'Unrecognized optimizer: {args.optimizer}')
@@ -262,8 +313,15 @@ def get_dataset(args):
                 # Chose uneuqal splits for every user
                 raise NotImplementedError()
             else:
-                # Chose euqal splits for every user
-                user_groups = cifar_noniid(train_dataset, args.num_users)
+                # Choose the configured CIFAR non-IID partition.
+                if args.cifar_partition == 'dirichlet':
+                    user_groups = cifar_noniid_dirichlet(
+                        train_dataset, args.num_users, args.dirichlet_alpha,
+                        args.dirichlet_min_size, bool(args.dirichlet_balance))
+                else:
+                    user_groups = cifar_noniid(
+                        train_dataset, args.num_users,
+                        args.cifar_shards_per_user)
 
     elif args.dataset == 'mnist' or 'fmnist':
         if args.dataset == 'mnist':
@@ -297,11 +355,30 @@ def get_dataset(args):
     return train_dataset, test_dataset, user_groups
 
 
-def average_weights(w):
+def average_weights(w, sample_counts=None):
     """
     Returns the average of the weights.
     """
     w_avg = copy.deepcopy(w[0])
+
+    if sample_counts is not None:
+        if len(sample_counts) != len(w):
+            raise ValueError('sample_counts must match number of weight sets')
+        total_count = float(sum(sample_counts))
+        if total_count <= 0:
+            raise ValueError('sample_counts must sum to a positive value')
+        for key in w_avg.keys():
+            if torch.is_floating_point(w_avg[key]):
+                w_avg[key] = (
+                    w[0][key].clone() * (sample_counts[0] / total_count))
+                for i in range(1, len(w)):
+                    w_avg[key] += w[i][key] * (sample_counts[i] / total_count)
+            else:
+                for i in range(1, len(w)):
+                    w_avg[key] += w[i][key]
+                w_avg[key] = torch.div(w_avg[key], len(w)).to(w[0][key].dtype)
+        return w_avg
+
     for key in w_avg.keys():
         for i in range(1, len(w)):
             w_avg[key] += w[i][key]

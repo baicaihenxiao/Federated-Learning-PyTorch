@@ -40,8 +40,8 @@ if __name__ == '__main__':
     run_name = get_run_name(
         args,
         'baseline',
-        ['dataset', 'model', 'epochs', 'optimizer', 'lr', 'batch_size',
-         'scheduler', 'test_interval'],
+        ['dataset', 'model', 'epochs', 'norm', 'optimizer', 'lr',
+         'batch_size', 'scheduler', 'test_interval'],
     )
 
     # load datasets

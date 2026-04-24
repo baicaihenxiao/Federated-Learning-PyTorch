@@ -90,7 +90,8 @@ class CNNCifar(nn.Module):
 class ResNet18Cifar(nn.Module):
     def __init__(self, args):
         super(ResNet18Cifar, self).__init__()
-        self.model = resnet18(weights=None)
+        self.model = resnet18(weights=None,
+                              norm_layer=_resnet_norm_layer(args.norm))
         self.model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1,
                                      padding=1, bias=False)
         self.model.maxpool = nn.Identity()
@@ -99,6 +100,29 @@ class ResNet18Cifar(nn.Module):
     def forward(self, x):
         x = self.model(x)
         return F.log_softmax(x, dim=1)
+
+
+def _resnet_norm_layer(norm):
+    norm = str(norm).lower()
+
+    if norm in ('batch_norm', 'batchnorm', 'bn'):
+        return nn.BatchNorm2d
+
+    if norm in ('group_norm', 'groupnorm', 'gn'):
+        def group_norm(num_channels):
+            num_groups = min(32, num_channels)
+            while num_channels % num_groups != 0:
+                num_groups -= 1
+            return nn.GroupNorm(num_groups, num_channels)
+        return group_norm
+
+    if norm in ('layer_norm', 'layernorm', 'ln'):
+        return lambda num_channels: nn.GroupNorm(1, num_channels)
+
+    if norm in ('none', 'identity'):
+        return lambda num_channels: nn.Identity()
+
+    raise ValueError(f'Unrecognized normalization layer: {norm}')
 
 
 class modelC(nn.Module):
