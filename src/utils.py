@@ -5,7 +5,6 @@
 import copy
 import hashlib
 import logging
-import os
 import random
 import re
 import subprocess
@@ -19,6 +18,11 @@ from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal
 from sampling import cifar_iid, cifar_noniid, cifar_noniid_dirichlet
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+LOG_FORMAT = (
+    '%(asctime)s %(levelname)s %(filename)s-%(process)d-'
+    '%(funcName)s:%(lineno)d %(message)s'
+)
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def get_log_path():
@@ -27,24 +31,77 @@ def get_log_path():
     return str(log_path)
 
 
-def get_logger(log_name):
-    log_file_path = get_log_path()
-    log_file_path = os.path.join(
-        log_file_path,
-        '%s-logfile.log' % datetime.now().strftime("%Y-%m-%d"))
+def _new_log_formatter():
+    return logging.Formatter(fmt=LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
+
+def _remove_file_handlers(log_file_path=None):
+    root_logger = logging.getLogger()
+    target_path = None
+    if log_file_path is not None:
+        target_path = Path(log_file_path).expanduser().resolve()
+
+    for handler in list(root_logger.handlers):
+        if not isinstance(handler, logging.FileHandler):
+            continue
+        if target_path is not None:
+            handler_path = Path(handler.baseFilename).expanduser().resolve()
+            if handler_path != target_path:
+                continue
+        handler.flush()
+        root_logger.removeHandler(handler)
+        handler.close()
+
+
+def set_log_file(log_file_path, mode='a+'):
+    """Route root logging to a specific file, replacing older file handlers."""
+    log_file_path = Path(log_file_path)
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    formatter = _new_log_formatter()
+
+    _remove_file_handlers()
+
+    has_console_handler = False
+    for handler in root_logger.handlers:
+        if (isinstance(handler, logging.StreamHandler) and
+                not isinstance(handler, logging.FileHandler)):
+            has_console_handler = True
+        handler.setFormatter(formatter)
+
+    if not has_console_handler:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+
+    file_handler = logging.FileHandler(filename=str(log_file_path),
+                                       encoding='utf-8', mode=mode)
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+    return log_file_path
+
+
+def promote_log_file(temp_log_path, final_log_path):
+    """Rename an active temporary log file after a successful run."""
+    temp_log_path = Path(temp_log_path)
+    final_log_path = Path(final_log_path)
+
+    _remove_file_handlers(temp_log_path)
+    final_log_path.parent.mkdir(parents=True, exist_ok=True)
+    if temp_log_path.exists():
+        temp_log_path.replace(final_log_path)
+
+    return set_log_file(final_log_path, mode='a+')
+
+
+def get_logger(log_name):
     logger = logging.getLogger(log_name)
-    cur_format = '%(asctime)s %(levelname)s %(filename)s-%(process)d-%(funcName)s:%(lineno)d %(message)s'
     if not logging.getLogger().handlers:
-        logging.basicConfig(handlers=[logging.FileHandler(filename=log_file_path,
-                                                          encoding='utf-8',
-                                                          mode='a+'),
-                                      logging.StreamHandler()
-                                      ],
-                            level=logging.INFO,
-                            # datefmt="%H:%M:%S",
-                            datefmt="%Y-%m-%d %H:%M:%S",
-                            format=cur_format)
+        log_file_path = Path(get_log_path()) / (
+            '%s-logfile.log' % datetime.now().strftime("%Y-%m-%d"))
+        set_log_file(log_file_path)
     # format = '%(asctime)s %(levelname)s %(name)s %(module)s-%(funcName)s:%(lineno)d %(process)d-%(threadName)s msg = %(message)s')
     return logger
 
