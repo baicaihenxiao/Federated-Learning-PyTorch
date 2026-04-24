@@ -18,7 +18,7 @@ from utils import (
 )
 from options import args_parser
 from update import test_inference
-from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
+from models import MLP, CNNMnist, CNNCifar, ResNet18Cifar, NUM_CLASSES
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SAVE_DIR = PROJECT_ROOT / 'save'
@@ -52,8 +52,6 @@ if __name__ == '__main__':
         # Convolutional neural netork
         if args.dataset == 'mnist':
             global_model = CNNMnist(args=args)
-        elif args.dataset == 'fmnist':
-            global_model = CNNFashion_Mnist(args=args)
         elif args.dataset == 'cifar':
             global_model = CNNCifar(args=args)
     elif args.model == 'resnet18':
@@ -66,8 +64,8 @@ if __name__ == '__main__':
         len_in = 1
         for x in img_size:
             len_in *= x
-            global_model = MLP(dim_in=len_in, dim_hidden=64,
-                               dim_out=args.num_classes)
+        global_model = MLP(dim_in=len_in, dim_hidden=64,
+                           dim_out=NUM_CLASSES)
     else:
         exit('Error: unrecognized model')
 

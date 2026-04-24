@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 import torch
 from torchvision import datasets, transforms
-from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal
-from sampling import cifar_iid, cifar_noniid, cifar_noniid_dirichlet
+from sampling import mnist_iid, mnist_noniid
+from sampling import cifar_iid, cifar_noniid
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOG_FORMAT = (
@@ -120,7 +120,7 @@ IMPORTANT_ARG_KEYS = [
     'dataset',
     'model',
     'iid',
-    'unequal',
+    'dirichlet_alpha',
     'epochs',
     'num_users',
     'frac',
@@ -133,11 +133,6 @@ IMPORTANT_ARG_KEYS = [
     'weight_decay',
     'scheduler',
     'norm',
-    'cifar_partition',
-    'cifar_shards_per_user',
-    'dirichlet_alpha',
-    'dirichlet_min_size',
-    'dirichlet_balance',
     'test_interval',
     'device',
     'gpu',
@@ -248,11 +243,7 @@ FILENAME_FIELD_ALIASES = {
     'optimizer': 'opt',
     'scheduler': 'sch',
     'test_interval': 'ti',
-    'cifar_partition': 'part',
-    'cifar_shards_per_user': 's',
     'dirichlet_alpha': 'a',
-    'dirichlet_min_size': 'min',
-    'dirichlet_balance': 'bal',
 }
 
 
@@ -260,8 +251,6 @@ FILENAME_VALUE_ALIASES = {
     'batch_norm': 'bn',
     'group_norm': 'gn',
     'layer_norm': 'ln',
-    'dirichlet': 'dir',
-    'shard': 'shard',
 }
 
 
@@ -337,7 +326,25 @@ def get_dataset(args):
     each of those users.
     """
 
-    if args.dataset == 'cifar':
+    if args.dataset == 'mnist':
+        data_dir = PROJECT_ROOT / 'data' / 'mnist'
+        apply_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))])
+
+        train_dataset = datasets.MNIST(str(data_dir), train=True, download=True,
+                                       transform=apply_transform)
+
+        test_dataset = datasets.MNIST(str(data_dir), train=False, download=True,
+                                      transform=apply_transform)
+
+        if args.iid:
+            user_groups = mnist_iid(train_dataset, args.num_users)
+        else:
+            user_groups = mnist_noniid(
+                train_dataset, args.num_users, args.dirichlet_alpha)
+
+    elif args.dataset == 'cifar':
         data_dir = PROJECT_ROOT / 'data' / 'cifar'
         train_transform = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -360,54 +367,14 @@ def get_dataset(args):
                                         download=True,
                                         transform=test_transform)
 
-        # sample training data amongst users
         if args.iid:
-            # Sample IID user data from Mnist
             user_groups = cifar_iid(train_dataset, args.num_users)
         else:
-            # Sample Non-IID user data from Mnist
-            if args.unequal:
-                # Chose uneuqal splits for every user
-                raise NotImplementedError()
-            else:
-                # Choose the configured CIFAR non-IID partition.
-                if args.cifar_partition == 'dirichlet':
-                    user_groups = cifar_noniid_dirichlet(
-                        train_dataset, args.num_users, args.dirichlet_alpha,
-                        args.dirichlet_min_size, bool(args.dirichlet_balance))
-                else:
-                    user_groups = cifar_noniid(
-                        train_dataset, args.num_users,
-                        args.cifar_shards_per_user)
+            user_groups = cifar_noniid(
+                train_dataset, args.num_users, args.dirichlet_alpha)
 
-    elif args.dataset == 'mnist' or 'fmnist':
-        if args.dataset == 'mnist':
-            data_dir = PROJECT_ROOT / 'data' / 'mnist'
-        else:
-            data_dir = PROJECT_ROOT / 'data' / 'fmnist'
-
-        apply_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))])
-
-        train_dataset = datasets.MNIST(str(data_dir), train=True, download=True,
-                                       transform=apply_transform)
-
-        test_dataset = datasets.MNIST(str(data_dir), train=False, download=True,
-                                      transform=apply_transform)
-
-        # sample training data amongst users
-        if args.iid:
-            # Sample IID user data from Mnist
-            user_groups = mnist_iid(train_dataset, args.num_users)
-        else:
-            # Sample Non-IID user data from Mnist
-            if args.unequal:
-                # Chose uneuqal splits for every user
-                user_groups = mnist_noniid_unequal(train_dataset, args.num_users)
-            else:
-                # Chose euqal splits for every user
-                user_groups = mnist_noniid(train_dataset, args.num_users)
+    else:
+        raise ValueError(f'Unsupported dataset: {args.dataset}')
 
     return train_dataset, test_dataset, user_groups
 

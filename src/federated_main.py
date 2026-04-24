@@ -29,7 +29,7 @@ except ImportError:
 
 from options import args_parser
 from update import LocalUpdate, test_inference
-from models import MLP, CNNMnist, CNNFashion_Mnist, CNNCifar, ResNet18Cifar
+from models import MLP, CNNMnist, CNNCifar, ResNet18Cifar, NUM_CLASSES
 from utils import (
     get_dataset, get_device, average_weights, get_logger, get_run_name,
     log_args, log_git_commit, promote_log_file, set_log_file, set_seed,
@@ -83,9 +83,8 @@ def get_federated_run_name(args):
         args,
         'fed',
         ['dataset', 'model', 'epochs', 'num_users', 'frac', 'iid',
-         'norm', 'cifar_partition', 'dirichlet_alpha',
-         'dirichlet_min_size', 'dirichlet_balance', 'cifar_shards_per_user',
-         'local_ep', 'local_bs', 'optimizer', 'lr', 'test_interval'],
+         'dirichlet_alpha', 'norm', 'local_ep', 'local_bs', 'optimizer',
+         'lr', 'test_interval'],
     )
 
 
@@ -140,8 +139,6 @@ def main():
             # Convolutional neural netork
             if args.dataset == 'mnist':
                 global_model = CNNMnist(args=args)
-            elif args.dataset == 'fmnist':
-                global_model = CNNFashion_Mnist(args=args)
             elif args.dataset == 'cifar':
                 global_model = CNNCifar(args=args)
 
@@ -156,8 +153,8 @@ def main():
             len_in = 1
             for x in img_size:
                 len_in *= x
-                global_model = MLP(dim_in=len_in, dim_hidden=64,
-                                   dim_out=args.num_classes)
+            global_model = MLP(dim_in=len_in, dim_hidden=64,
+                               dim_out=NUM_CLASSES)
         else:
             exit('Error: unrecognized model')
 

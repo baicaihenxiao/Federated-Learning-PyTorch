@@ -3,9 +3,9 @@
 Implementation of the vanilla federated learning paper : [Communication-Efficient Learning of Deep Networks from Decentralized Data](https://arxiv.org/abs/1602.05629).
 
 
-Experiments are produced on MNIST, Fashion MNIST and CIFAR10 (both IID and non-IID). In case of non-IID, the data amongst the users can be split equally or unequally.
+Experiments are produced on MNIST and CIFAR-10, each with IID and Dirichlet non-IID client splits.
 
-Since the purpose of these experiments are to illustrate the effectiveness of the federated learning paradigm, only simple models such as MLP and CNN are used.
+Since the purpose of these experiments are to illustrate the effectiveness of the federated learning paradigm, compact models such as MLP, CNN, and ResNet-18 are used.
 
 ## Requirments
 Install all the packages from requirments.txt
@@ -15,7 +15,7 @@ Install all the packages from requirments.txt
 
 ## Data
 * Download train and test datasets manually or they will be automatically downloaded from torchvision datasets.
-* Experiments are run on Mnist, Fashion Mnist and Cifar.
+* Experiments are run on MNIST and CIFAR-10.
 * To use your own dataset: Move your dataset to data directory and write a wrapper on pytorch dataset class.
 
 ## Running the experiments
@@ -37,9 +37,46 @@ Federated experiment involves training a global model using many local models.
 ```
 python src/federated_main.py --dataset=cifar --gpu=0 --iid=1 --epochs=10
 ```
-* To run the same experiment under non-IID condition:
+* To run the same experiment under Dirichlet non-IID condition:
 ```
-python src/federated_main.py --dataset=cifar --gpu=0 --iid=0 --epochs=10
+python src/federated_main.py --dataset=cifar --gpu=0 --iid=0 --dirichlet_alpha=0.1 --epochs=10
+```
+
+### Typical Commands
+
+MNIST baseline:
+```
+python src/baseline_main.py --dataset=mnist --model=cnn --epochs=10 --gpu=0
+```
+
+CIFAR-10 baseline:
+```
+python src/baseline_main.py --dataset=cifar --model=resnet18 --epochs=150 --batch_size=128 --lr=0.1 --scheduler=cosine --norm=batch_norm --gpu=0
+```
+
+MNIST federated IID:
+```
+python src/federated_main.py --dataset=mnist --iid=1 --epochs=50 --num_users=100 --frac=0.1 --local_ep=10 --local_bs=10 --lr=0.01 --gpu=0
+```
+
+MNIST federated Dirichlet non-IID:
+```
+python src/federated_main.py --dataset=mnist --iid=0 --epochs=150 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=10 --lr=0.01 --dirichlet_alpha=0.5 --gpu=0
+```
+
+CIFAR-10 federated IID:
+```
+python src/federated_main.py --dataset=cifar --iid=1 --epochs=150 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.03 --scheduler=cosine --norm=batch_norm --gpu=0
+```
+
+CIFAR-10 federated Dirichlet non-IID:
+```
+python src/federated_main.py --dataset=cifar --iid=0 --epochs=1000 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.05 --scheduler=cosine --dirichlet_alpha=0.1 --norm=group_norm --test_interval=1 --gpu=0
+```
+
+CIFAR-10 federated Dirichlet non-IID with BatchNorm for comparison:
+```
+python src/federated_main.py --dataset=cifar --iid=0 --epochs=1000 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.05 --scheduler=cosine --dirichlet_alpha=0.1 --norm=batch_norm --test_interval=1 --gpu=0
 ```
 
 You can change the default values of other parameters to simulate different conditions. Refer to the options section.
@@ -47,21 +84,47 @@ You can change the default values of other parameters to simulate different cond
 ## Options
 The default values for various paramters parsed to the experiment are given in ```options.py```. Details are given some of those parameters:
 
-* ```--dataset:```  Default: 'cifar'. Options: 'mnist', 'fmnist', 'cifar'
-* ```--model:```    Default depends on dataset ('cnn' for MNIST/Fashion-MNIST, 'resnet18' for CIFAR-10). Options: 'mlp', 'cnn', 'resnet18'
+* ```--dataset:```  Default: 'cifar'. Options: 'mnist', 'cifar'
+* ```--model:```    Default depends on dataset ('cnn' for MNIST, 'resnet18' for CIFAR-10). Options: 'mlp', 'cnn', 'resnet18'
 * ```--gpu:```      Default: auto-select best device (`CUDA > MPS > CPU`). Can also be set to a specific CUDA GPU id.
 * ```--epochs:```   Number of rounds of training. Default: 50 for MNIST, 150 for CIFAR-10. Federated MNIST non-IID defaults to 150.
-* ```--lr:```       Learning rate set to 0.01 by default.
+* ```--lr:```       Learning rate. Default depends on dataset and experiment setting.
 * ```--verbose:```  Detailed log outputs. Default: 0. Set to 1 to activate.
 * ```--seed:```     Random Seed. Default set to 1.
 
 #### Federated Parameters
-* ```--iid:```      Distribution of data amongst users. Default set to IID. Set to 0 for non-IID.
+* ```--iid:```      Distribution of data amongst users. Default set to IID. Set to 0 for Dirichlet non-IID.
+* ```--dirichlet_alpha:``` Dirichlet concentration for non-IID label skew. Smaller values are more heterogeneous. Default is 0.5.
 * ```--num_users:```Number of users. Default is 100.
 * ```--frac:```     Fraction of users to be used for federated updates. Default is 0.1.
-* ```--local_ep:``` Number of local training epochs in each user. Default is 10 for MNIST IID, 1 for MNIST non-IID, and 5 for CIFAR-10.
-* ```--local_bs:``` Batch size of local updates in each user. Default is 10.
-* ```--unequal:```  Used in non-iid setting. Option to split the data amongst users equally or unequally. Default set to 0 for equal splits. Set to 1 for unequal splits.
+* ```--local_ep:``` Number of local training epochs in each user. Default is 10 for MNIST IID and 1 for MNIST non-IID/CIFAR-10.
+* ```--local_bs:``` Batch size of local updates in each user. Default depends on dataset.
+
+Federated defaults when an option is omitted; explicit command-line values
+override these defaults.
+
+| Parameter | MNIST IID | MNIST non-IID | CIFAR-10 IID | CIFAR-10 non-IID |
+| --- | --- | --- | --- | --- |
+| `--dataset` | `mnist` | `mnist` | `cifar` | `cifar` |
+| `--iid` | `1` | `0` | `1` | `0` |
+| `--model` | `cnn` | `cnn` | `resnet18` | `resnet18` |
+| `--epochs` | `50` | `150` | `150` | `150` |
+| `--num_users` | `100` | `100` | `100` | `100` |
+| `--frac` | `0.1` | `0.1` | `0.1` | `0.1` |
+| `--local_ep` | `10` | `1` | `1` | `1` |
+| `--local_bs` | `10` | `10` | `32` | `32` |
+| `--batch_size` | `64` | `64` | `128` | `128` |
+| `--optimizer` | `sgd` | `sgd` | `sgd` | `sgd` |
+| `--lr` | `0.01` | `0.01` | `0.03` | `0.03` |
+| `--momentum` | `0.9` | `0.9` | `0.9` | `0.9` |
+| `--weight_decay` | `0.0` | `0.0` | `0.0005` | `0.0005` |
+| `--scheduler` | `none` | `none` | `cosine` | `cosine` |
+| `--norm` | `batch_norm` | `batch_norm` | `batch_norm` | `group_norm` |
+| `--dirichlet_alpha` | `0.5` (unused) | `0.5` | `0.5` (unused) | `0.5` |
+| `--test_interval` | `1` | `1` | `1` | `1` |
+| `--gpu` | auto | auto | auto | auto |
+| `--verbose` | `0` | `0` | `0` | `0` |
+| `--seed` | `1` | `1` | `1` | `1` |
 
 ## Results on MNIST
 #### Baseline Experiment:
