@@ -34,25 +34,24 @@ class LocalUpdate(object):
     def __init__(self, args, dataset, idxs, logger):
         self.args = args
         self.logger = logger
-        self.trainloader, self.validloader, self.testloader = self.train_val_test(
-            dataset, list(idxs))
+        self.local_dataset = DatasetSplit(dataset, list(idxs))
+        self.trainloader = self.build_trainloader()
+        self.testloader = None
         self.device = get_device(args)
         # Default criterion set to NLL loss function
-        self.criterion = nn.NLLLoss().to(self.device)
+        self.criterion = nn.NLLLoss()
 
-    def train_val_test(self, dataset, idxs):
-        """
-        Returns dataloaders over all local data for a given client.
-        """
-        eval_batch_size = max(1, min(len(idxs), self.args.local_bs))
+    def build_trainloader(self):
+        """Build a train loader over all local data for one client."""
+        return DataLoader(self.local_dataset, batch_size=self.args.local_bs,
+                          shuffle=True)
 
-        trainloader = DataLoader(DatasetSplit(dataset, idxs),
-                                 batch_size=self.args.local_bs, shuffle=True)
-        validloader = DataLoader(DatasetSplit(dataset, idxs),
-                                 batch_size=eval_batch_size, shuffle=False)
-        testloader = DataLoader(DatasetSplit(dataset, idxs),
-                                batch_size=eval_batch_size, shuffle=False)
-        return trainloader, validloader, testloader
+    def build_testloader(self):
+        """Build the per-client eval loader only when inference needs it."""
+        eval_batch_size = max(1, min(len(self.local_dataset),
+                                     self.args.local_bs))
+        return DataLoader(self.local_dataset, batch_size=eval_batch_size,
+                          shuffle=False)
 
     def update_weights(self, model, global_round):
         # Set mode to train model
@@ -88,6 +87,8 @@ class LocalUpdate(object):
         model.eval()
         # Keep inference on the same device used for local training.
         model.to(self.device)
+        if self.testloader is None:
+            self.testloader = self.build_testloader()
         loss, total, correct = 0.0, 0, 0
 
         with torch.no_grad():
@@ -121,7 +122,7 @@ def test_inference(args, model, test_dataset):
 
     # Evaluate on the device where the caller placed the model.
     device = next(model.parameters()).device
-    criterion = nn.NLLLoss().to(device)
+    criterion = nn.NLLLoss()
     testloader = DataLoader(test_dataset, batch_size=128,
                             shuffle=False)
 

@@ -106,6 +106,11 @@ if __name__ == '__main__':
 
     # load dataset and user groups
     train_dataset, test_dataset, user_groups = get_dataset(args)
+    local_updates = {
+        int(user_id): LocalUpdate(args=args, dataset=train_dataset, idxs=idxs,
+                                  logger=tb_logger)
+        for user_id, idxs in user_groups.items()
+    }
 
     # BUILD MODEL
     if args.model == 'cnn':
@@ -160,8 +165,7 @@ if __name__ == '__main__':
 
         for user_position, idx in enumerate(idxs_users, start=1):
             user_start_time = time.time()
-            local_model = LocalUpdate(args=args, dataset=train_dataset,
-                                      idxs=user_groups[idx], logger=tb_logger)
+            local_model = local_updates[int(idx)]
             w, _ = local_model.update_weights(
                 model=copy.deepcopy(global_model),
                 global_round=current_epoch)
