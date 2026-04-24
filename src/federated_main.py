@@ -156,7 +156,7 @@ if __name__ == '__main__':
         local_weights = []
         local_sample_counts = []
         args.current_lr = get_round_lr(args, current_epoch)
-        LOGGER.info(f'\n | Global Training Round : {current_epoch}/{args.epochs} |\n')
+        # LOGGER.info(f'\n | Global Training Round : {current_epoch}/{args.epochs} |\n')
 
         global_model.train()
         m = max(int(args.frac * args.num_users), 1)
