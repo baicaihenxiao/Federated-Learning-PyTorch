@@ -205,10 +205,14 @@ if __name__ == '__main__':
         progress_summary = format_round_progress(
             current_epoch, args.epochs, elapsed_time)
 
+        selected_users_summary = 'Selected Users: {}/{}'.format(
+            m, args.num_users)
+        if m < args.num_users:
+            selected_users_summary += ' {}'.format(selected_user_ids)
+
         round_summary = (
-            'Round Summary : {}/{} | Selected Users: {}/{} {}'.format(
-                current_epoch, args.epochs, m, args.num_users,
-                selected_user_ids)
+            'Round Summary : {}/{} | {}'.format(
+                current_epoch, args.epochs, selected_users_summary)
         )
         if should_test:
             round_summary += (
