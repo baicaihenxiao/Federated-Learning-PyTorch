@@ -187,13 +187,19 @@ def get_device(args):
     if configured_device is not None:
         return torch.device(configured_device)
 
+    requested_gpu = getattr(args, 'gpu', None)
+
+    # Prefer CUDA whenever it is available, defaulting to GPU 0 when the user
+    # does not request a specific device.
+    if torch.cuda.is_available():
+        gpu_index = 0 if requested_gpu is None else requested_gpu
+        torch.cuda.set_device(gpu_index)
+        return torch.device(f'cuda:{gpu_index}')
+
     # Treat --gpu as an explicit CUDA request; fall back cleanly if unavailable.
-    if args.gpu is not None:
-        if torch.cuda.is_available():
-            torch.cuda.set_device(args.gpu)
-            return torch.device(f'cuda:{args.gpu}')
+    if requested_gpu is not None:
         LOGGER.warning('CUDA GPU %s requested, but CUDA is not available.',
-                       args.gpu)
+                       requested_gpu)
 
     # On Apple Silicon, MPS is much faster than CPU when the PyTorch build has it.
     mps_backend = getattr(torch.backends, 'mps', None)

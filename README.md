@@ -21,11 +21,11 @@ Install all the packages from requirments.txt
 ## Running the experiments
 The baseline experiment trains the model in the conventional way.
 
-* To run the baseline experiment with MNIST on CNN using CPU:
+* To run the baseline experiment with MNIST on CNN using automatic device selection (`CUDA > MPS > CPU`):
 ```
 python src/baseline_main.py --dataset=mnist --epochs=10
 ```
-* Or to run it on GPU (eg: if gpu:0 is available):
+* Or to run it on a specific CUDA GPU (eg: if `cuda:0` is available):
 ```
 python src/baseline_main.py --dataset=mnist --gpu=0 --epochs=10
 ```
@@ -49,7 +49,7 @@ The default values for various paramters parsed to the experiment are given in `
 
 * ```--dataset:```  Default: 'cifar'. Options: 'mnist', 'fmnist', 'cifar'
 * ```--model:```    Default depends on dataset ('cnn' for MNIST/Fashion-MNIST, 'resnet18' for CIFAR-10). Options: 'mlp', 'cnn', 'resnet18'
-* ```--gpu:```      Default: None (runs on CPU). Can also be set to the specific gpu id.
+* ```--gpu:```      Default: auto-select best device (`CUDA > MPS > CPU`). Can also be set to a specific CUDA GPU id.
 * ```--epochs:```   Number of rounds of training. Default: 50 for MNIST, 150 for CIFAR-10. Federated MNIST non-IID defaults to 150.
 * ```--lr:```       Learning rate set to 0.01 by default.
 * ```--verbose:```  Detailed log outputs. Default: 0. Set to 1 to activate.

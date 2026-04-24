@@ -246,8 +246,8 @@ def args_parser(experiment=None):
     parser.add_argument('--num_classes', type=int, default=10, help="number \
                         of classes")
     parser.add_argument('--gpu', type=int, default=None, help="To use CUDA, set \
-                        to a specific GPU ID. If omitted, MPS is used when \
-                        available, otherwise CPU is used.")
+                        to a specific GPU ID. If omitted, CUDA GPU 0 is used \
+                        when available, then MPS, otherwise CPU.")
     parser.add_argument('--optimizer', type=str, default='sgd',
                         choices=['sgd', 'adam'], help="type of optimizer")
     parser.add_argument('--iid', type=int, default=None,
