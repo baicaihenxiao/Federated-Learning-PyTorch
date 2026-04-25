@@ -122,7 +122,7 @@ FEDERATED_DEFAULTS = {
     },
     ('cifar', 0): {
         'iid': 0,
-        'norm': 'group_norm',
+        'norm': 'batch_norm',
         'local_ep': 1,
         'local_bs': 32,
         'lr': 0.03,

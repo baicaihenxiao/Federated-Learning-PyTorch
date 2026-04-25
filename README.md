@@ -71,12 +71,12 @@ python src/federated_main.py --dataset=cifar --iid=1 --epochs=150 --num_users=10
 
 CIFAR-10 federated Dirichlet non-IID:
 ```
-python src/federated_main.py --dataset=cifar --iid=0 --epochs=1000 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.05 --scheduler=cosine --dirichlet_alpha=0.1 --norm=group_norm --test_interval=1 --gpu=0
+python src/federated_main.py --dataset=cifar --iid=0 --epochs=1000 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.05 --scheduler=cosine --dirichlet_alpha=0.1 --norm=batch_norm --test_interval=1 --gpu=0
 ```
 
-CIFAR-10 federated Dirichlet non-IID with BatchNorm for comparison:
+CIFAR-10 federated Dirichlet non-IID with GroupNorm for comparison:
 ```
-python src/federated_main.py --dataset=cifar --iid=0 --epochs=1000 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.05 --scheduler=cosine --dirichlet_alpha=0.1 --norm=batch_norm --test_interval=1 --gpu=0
+python src/federated_main.py --dataset=cifar --iid=0 --epochs=1000 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.05 --scheduler=cosine --dirichlet_alpha=0.1 --norm=group_norm --test_interval=1 --gpu=0
 ```
 
 You can change the default values of other parameters to simulate different conditions. Refer to the options section.
@@ -119,7 +119,7 @@ override these defaults.
 | `--momentum` | `0.9` | `0.9` | `0.9` | `0.9` |
 | `--weight_decay` | `0.0` | `0.0` | `0.0005` | `0.0005` |
 | `--scheduler` | `none` | `none` | `cosine` | `cosine` |
-| `--norm` | `batch_norm` | `batch_norm` | `batch_norm` | `group_norm` |
+| `--norm` | `batch_norm` | `batch_norm` | `batch_norm` | `batch_norm` |
 | `--dirichlet_alpha` | `0.5` (unused) | `0.5` | `0.5` (unused) | `0.5` |
 | `--test_interval` | `1` | `1` | `1` | `1` |
 | `--gpu` | auto | auto | auto | auto |
