@@ -134,6 +134,13 @@ IMPORTANT_ARG_KEYS = [
     'scheduler',
     'norm',
     'test_interval',
+    'attack',
+    'malicious_ratio',
+    'sign_flip_lambda',
+    'min_max_search_steps',
+    'label_flip_source',
+    'attack_target_label',
+    'backdoor_fraction',
     'device',
     'gpu',
     'seed',
@@ -244,6 +251,13 @@ FILENAME_FIELD_ALIASES = {
     'scheduler': 'sch',
     'test_interval': 'ti',
     'dirichlet_alpha': 'a',
+    'attack': 'atk',
+    'malicious_ratio': 'mr',
+    'sign_flip_lambda': 'sfl',
+    'min_max_search_steps': 'mmsteps',
+    'label_flip_source': 'lfs',
+    'attack_target_label': 'tgt',
+    'backdoor_fraction': 'bdf',
 }
 
 

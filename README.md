@@ -79,6 +79,36 @@ CIFAR-10 federated Dirichlet non-IID with GroupNorm for comparison:
 python src/federated_main.py --dataset=cifar --iid=0 --epochs=1000 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.05 --scheduler=cosine --dirichlet_alpha=0.1 --norm=group_norm --test_interval=1 --gpu=0
 ```
 
+### Attack Configurations
+
+The federated runner supports four attacks through `--attack` and
+`--malicious_ratio`.
+
+Untargeted attacks:
+```
+python src/federated_main.py --dataset=mnist --attack=sign_flip --malicious_ratio=0.1 --sign_flip_lambda=5
+python src/federated_main.py --dataset=mnist --attack=min_max --malicious_ratio=0.1
+```
+
+Targeted attacks:
+```
+python src/federated_main.py --dataset=mnist --attack=label_flip --malicious_ratio=0.1 --label_flip_source=1 --attack_target_label=7
+python src/federated_main.py --dataset=cifar --attack=backdoor --malicious_ratio=0.1 --backdoor_fraction=0.2 --attack_target_label=7
+```
+
+To sweep the malicious client ratios from the attack experiments:
+```
+for ratio in 0 0.1 0.2 0.3; do
+  python src/federated_main.py --dataset=cifar --attack=sign_flip --malicious_ratio=${ratio}
+done
+```
+
+`--malicious_ratio=0` is fully benign training even when `--attack` is set.
+Backdoor poisoning samples 20% of each malicious client's local images every
+round, stamps a normalized white trigger in the bottom-right corner, and resets
+poisoned labels to class 7 by default. The trigger is 3x3 for MNIST and 5x5 for
+CIFAR-10.
+
 You can change the default values of other parameters to simulate different conditions. Refer to the options section.
 
 ## Options
@@ -91,6 +121,12 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--lr:```       Learning rate. Default depends on dataset and experiment setting.
 * ```--verbose:```  Detailed log outputs. Default: 0. Set to 1 to activate.
 * ```--seed:```     Random Seed. Default set to 1.
+* ```--attack:```   Federated attack. Options: `none`, `sign_flip`, `min_max`, `label_flip`, `backdoor`. Default: `none`.
+* ```--malicious_ratio:``` Fraction of total clients controlled by the adversary. Default: `0.0`.
+* ```--sign_flip_lambda:``` Sign-flip amplification factor. Default: `5.0`.
+* ```--label_flip_source:``` Source class for label flipping. Default: `1`.
+* ```--attack_target_label:``` Target class for label-flip and backdoor attacks. Default: `7`.
+* ```--backdoor_fraction:``` Fraction of each malicious client's local partition poisoned per round. Default: `0.2`.
 
 #### Federated Parameters
 * ```--iid:```      Distribution of data amongst users. Default set to IID. Set to 0 for Dirichlet non-IID.

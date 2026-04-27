@@ -28,6 +28,7 @@ except ImportError:
             pass
 
 from options import args_parser
+from attacks import apply_update_attack, has_attack, select_malicious_clients
 from update import LocalUpdate, test_inference
 from models import MLP, CNNMnist, CNNCifar, ResNet18Cifar, NUM_CLASSES
 from utils import (
@@ -84,7 +85,7 @@ def get_federated_run_name(args):
         'fed',
         ['dataset', 'model', 'epochs', 'num_users', 'frac', 'iid',
          'dirichlet_alpha', 'norm', 'local_ep', 'local_bs', 'optimizer',
-         'lr', 'test_interval'],
+         'lr', 'attack', 'malicious_ratio', 'test_interval'],
     )
 
 
@@ -128,9 +129,18 @@ def main():
 
         # load dataset and user groups
         train_dataset, test_dataset, user_groups = get_dataset(args)
+        malicious_clients = select_malicious_clients(args)
+        LOGGER.info(
+            'Attack configuration: attack=%s | malicious_ratio=%.2f | '
+            'malicious_clients=%s/%s %s',
+            args.attack, args.malicious_ratio, len(malicious_clients),
+            args.num_users, sorted(malicious_clients))
         local_updates = {
             int(user_id): LocalUpdate(args=args, dataset=train_dataset,
-                                      idxs=idxs, logger=tb_logger)
+                                      idxs=idxs, logger=tb_logger,
+                                      client_id=int(user_id),
+                                      is_malicious=(
+                                          int(user_id) in malicious_clients))
             for user_id, idxs in user_groups.items()
         }
 
@@ -183,10 +193,13 @@ def main():
             idxs_users = np.random.choice(
                 range(args.num_users), m, replace=False)
             selected_user_ids = sorted(int(idx) for idx in idxs_users)
+            selected_malicious_flags = []
 
             for user_position, idx in enumerate(idxs_users, start=1):
                 user_start_time = time.time()
-                local_model = local_updates[int(idx)]
+                user_id = int(idx)
+                local_model = local_updates[user_id]
+                selected_malicious_flags.append(user_id in malicious_clients)
                 w, _ = local_model.update_weights(
                     model=copy.deepcopy(global_model),
                     global_round=current_epoch)
@@ -198,6 +211,10 @@ def main():
                         'User Time: %.2fs',
                         current_epoch, args.epochs, user_position, m,
                         int(idx), time.time() - user_start_time)
+
+            local_weights = apply_update_attack(
+                args, global_weights, local_weights, local_sample_counts,
+                selected_malicious_flags)
 
             # update global weights
             global_weights = average_weights(local_weights,
@@ -231,6 +248,9 @@ def main():
                 m, args.num_users)
             if m < args.num_users:
                 selected_users_summary += ' {}'.format(selected_user_ids)
+            if has_attack(args):
+                selected_users_summary += ' | Malicious Selected: {}'.format(
+                    sum(selected_malicious_flags))
 
             round_summary = (
                 'Round Summary : {}/{} | {}'.format(

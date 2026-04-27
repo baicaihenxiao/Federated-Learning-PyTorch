@@ -4,9 +4,14 @@
 
 import argparse
 
+from attacks import ATTACK_CHOICES, NO_ATTACK
+
 
 MAX_RANDOM_SEED = 2**32 - 1
+
 DEFAULT_DIRICHLET_ALPHA = 0.3
+NUM_DATASET_CLASSES = 10
+
 
 
 def seed_value(value):
@@ -211,6 +216,27 @@ def args_parser(experiment=None):
                         'or global rounds during training; set 0 to disable '
                         'intermediate test evaluation')
 
+    # attack arguments
+    parser.add_argument('--attack', type=str.lower, default=NO_ATTACK,
+                        choices=ATTACK_CHOICES,
+                        help='Byzantine/data attack to apply in federated '
+                        'training')
+    parser.add_argument('--malicious_ratio', type=float, default=0.0,
+                        help='fraction of total clients controlled by the '
+                        'adversary')
+    parser.add_argument('--sign_flip_lambda', type=float, default=5.0,
+                        help='amplification factor for sign-flipping attack')
+    parser.add_argument('--min_max_search_steps', type=int, default=30,
+                        help='binary-search steps for the Min-Max attack')
+    parser.add_argument('--label_flip_source', type=int, default=1,
+                        help='source class changed by label-flipping attack')
+    parser.add_argument('--attack_target_label', type=int, default=7,
+                        help='target class for label-flipping and backdoor '
+                        'attacks')
+    parser.add_argument('--backdoor_fraction', type=float, default=0.2,
+                        help='fraction of each malicious client partition '
+                        'poisoned per round by the backdoor attack')
+
     # model arguments
     parser.add_argument('--model', type=str.lower, default=None,
                         choices=['mlp', 'cnn', 'resnet18'],
@@ -246,4 +272,16 @@ def args_parser(experiment=None):
         parser.error('--test_interval must be greater than or equal to 0')
     if args.dirichlet_alpha <= 0:
         parser.error('--dirichlet_alpha must be greater than 0')
+    if args.malicious_ratio < 0 or args.malicious_ratio > 1:
+        parser.error('--malicious_ratio must be between 0 and 1')
+    if args.sign_flip_lambda <= 0:
+        parser.error('--sign_flip_lambda must be greater than 0')
+    if args.min_max_search_steps < 1:
+        parser.error('--min_max_search_steps must be at least 1')
+    if args.backdoor_fraction < 0 or args.backdoor_fraction > 1:
+        parser.error('--backdoor_fraction must be between 0 and 1')
+    if not 0 <= args.label_flip_source < NUM_DATASET_CLASSES:
+        parser.error('--label_flip_source must be between 0 and 9')
+    if not 0 <= args.attack_target_label < NUM_DATASET_CLASSES:
+        parser.error('--attack_target_label must be between 0 and 9')
     return args
