@@ -6,7 +6,7 @@
 import numpy as np
 
 
-DEFAULT_DIRICHLET_ALPHA = 0.5
+DEFAULT_DIRICHLET_ALPHA = 0.3
 
 
 def _dataset_labels(dataset):

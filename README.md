@@ -94,7 +94,7 @@ The default values for various paramters parsed to the experiment are given in `
 
 #### Federated Parameters
 * ```--iid:```      Distribution of data amongst users. Default set to IID. Set to 0 for Dirichlet non-IID.
-* ```--dirichlet_alpha:``` Dirichlet concentration for non-IID label skew. Smaller values are more heterogeneous. Default is 0.5.
+* ```--dirichlet_alpha:``` Dirichlet concentration for non-IID label skew. Smaller values are more heterogeneous. Default is 0.3.
 * ```--num_users:```Number of users. Default is 100.
 * ```--frac:```     Fraction of users to be used for federated updates. Default is 0.1.
 * ```--local_ep:``` Number of local training epochs in each user. Default is 1 for MNIST and CIFAR-10 federated runs.
@@ -120,7 +120,7 @@ override these defaults.
 | `--weight_decay` | `0.0` | `0.0` | `0.0005` | `0.0005` |
 | `--scheduler` | `none` | `none` | `cosine` | `cosine` |
 | `--norm` | `batch_norm` | `batch_norm` | `batch_norm` | `batch_norm` |
-| `--dirichlet_alpha` | `0.5` (unused) | `0.5` | `0.5` (unused) | `0.5` |
+| `--dirichlet_alpha` | `0.3` (unused) | `0.3` | `0.3` (unused) | `0.3` |
 | `--test_interval` | `1` | `1` | `1` | `1` |
 | `--gpu` | auto | auto | auto | auto |
 | `--verbose` | `0` | `0` | `0` | `0` |

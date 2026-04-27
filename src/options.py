@@ -6,7 +6,7 @@ import argparse
 
 
 MAX_RANDOM_SEED = 2**32 - 1
-DEFAULT_DIRICHLET_ALPHA = 0.5
+DEFAULT_DIRICHLET_ALPHA = 0.3
 
 
 def seed_value(value):
