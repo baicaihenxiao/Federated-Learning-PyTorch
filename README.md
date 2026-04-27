@@ -56,17 +56,17 @@ python src/baseline_main.py --dataset=cifar --model=resnet18 --epochs=150 --batc
 
 MNIST federated IID:
 ```
-python src/federated_main.py --dataset=mnist --iid=1 --epochs=50 --num_users=100 --frac=0.1 --local_ep=10 --local_bs=10 --lr=0.01 --gpu=0
+python src/federated_main.py --dataset=mnist --iid=1 --epochs=200 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=10 --lr=0.01 --gpu=0
 ```
 
 MNIST federated Dirichlet non-IID:
 ```
-python src/federated_main.py --dataset=mnist --iid=0 --epochs=150 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=10 --lr=0.01 --dirichlet_alpha=0.5 --gpu=0
+python src/federated_main.py --dataset=mnist --iid=0 --epochs=200 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=10 --lr=0.01 --dirichlet_alpha=0.5 --gpu=0
 ```
 
 CIFAR-10 federated IID:
 ```
-python src/federated_main.py --dataset=cifar --iid=1 --epochs=150 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.03 --scheduler=cosine --norm=batch_norm --gpu=0
+python src/federated_main.py --dataset=cifar --iid=1 --epochs=1000 --num_users=100 --frac=0.1 --local_ep=1 --local_bs=32 --lr=0.03 --scheduler=cosine --norm=batch_norm --gpu=0
 ```
 
 CIFAR-10 federated Dirichlet non-IID:
@@ -87,7 +87,7 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--dataset:```  Default: 'cifar'. Options: 'mnist', 'cifar'
 * ```--model:```    Default depends on dataset ('cnn' for MNIST, 'resnet18' for CIFAR-10). Options: 'mlp', 'cnn', 'resnet18'
 * ```--gpu:```      Default: auto-select best device (`CUDA > MPS > CPU`). Can also be set to a specific CUDA GPU id.
-* ```--epochs:```   Number of rounds of training. Default: 50 for MNIST, 150 for CIFAR-10. Federated MNIST non-IID defaults to 150.
+* ```--epochs:```   Number of rounds of training. Default: 200 for MNIST, 1000 for CIFAR-10.
 * ```--lr:```       Learning rate. Default depends on dataset and experiment setting.
 * ```--verbose:```  Detailed log outputs. Default: 0. Set to 1 to activate.
 * ```--seed:```     Random Seed. Default set to 1.
@@ -97,7 +97,7 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--dirichlet_alpha:``` Dirichlet concentration for non-IID label skew. Smaller values are more heterogeneous. Default is 0.5.
 * ```--num_users:```Number of users. Default is 100.
 * ```--frac:```     Fraction of users to be used for federated updates. Default is 0.1.
-* ```--local_ep:``` Number of local training epochs in each user. Default is 10 for MNIST IID and 1 for MNIST non-IID/CIFAR-10.
+* ```--local_ep:``` Number of local training epochs in each user. Default is 1 for MNIST and CIFAR-10 federated runs.
 * ```--local_bs:``` Batch size of local updates in each user. Default depends on dataset.
 
 Federated defaults when an option is omitted; explicit command-line values
@@ -108,10 +108,10 @@ override these defaults.
 | `--dataset` | `mnist` | `mnist` | `cifar` | `cifar` |
 | `--iid` | `1` | `0` | `1` | `0` |
 | `--model` | `cnn` | `cnn` | `resnet18` | `resnet18` |
-| `--epochs` | `50` | `150` | `150` | `150` |
+| `--epochs` | `200` | `200` | `1000` | `1000` |
 | `--num_users` | `100` | `100` | `100` | `100` |
 | `--frac` | `0.1` | `0.1` | `0.1` | `0.1` |
-| `--local_ep` | `10` | `1` | `1` | `1` |
+| `--local_ep` | `1` | `1` | `1` | `1` |
 | `--local_bs` | `10` | `10` | `32` | `32` |
 | `--batch_size` | `64` | `64` | `128` | `128` |
 | `--optimizer` | `sgd` | `sgd` | `sgd` | `sgd` |

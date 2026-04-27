@@ -34,8 +34,8 @@ DEFAULT_MODELS = {
 }
 
 DEFAULT_EPOCHS = {
-    'mnist': 50,
-    'cifar': 150,
+    'mnist': 200,
+    'cifar': 1000,
 }
 
 
@@ -91,7 +91,7 @@ FALLBACK_TRAINING_PRESET = {
 
 DEFAULT_FEDERATED_ARGS = {
     'iid': 1,
-    'local_ep': 10,
+    'local_ep': 1,
     'local_bs': 10,
     'test_interval': 1,
 }
@@ -100,14 +100,14 @@ DEFAULT_FEDERATED_ARGS = {
 FEDERATED_DEFAULTS = {
     ('mnist', 1): {
         'iid': 1,
-        'local_ep': 10,
+        'local_ep': 1,
         'local_bs': 10,
         'lr': 0.01,
         'test_interval': 1,
     },
     ('mnist', 0): {
         'iid': 0,
-        'epochs': 150,
+        'epochs': 200,
         'local_ep': 1,
         'local_bs': 10,
         'lr': 0.01,
