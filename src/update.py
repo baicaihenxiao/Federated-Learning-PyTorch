@@ -6,7 +6,10 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from attacks import apply_data_attack, sample_backdoor_indices
+from attacks import (
+    BACKDOOR, LABEL_FLIP, apply_data_attack, sample_backdoor_indices,
+    stamp_backdoor_trigger,
+)
 from utils import get_device, get_logger, get_optimizer
 
 
@@ -166,3 +169,40 @@ def test_inference(args, model, test_dataset):
 
     accuracy = correct/total
     return accuracy, loss/total
+
+
+def test_attack_success_rate(args, model, test_dataset):
+    """Evaluate targeted attack success rate on the global test dataset."""
+    if args.attack not in (LABEL_FLIP, BACKDOOR):
+        return None
+
+    model.eval()
+    device = next(model.parameters()).device
+    testloader = DataLoader(test_dataset, batch_size=128,
+                            shuffle=False)
+    target_label = int(args.attack_target_label)
+    total, success = 0, 0
+
+    with torch.no_grad():
+        for batch_idx, (images, labels) in enumerate(testloader):
+            images, labels = images.to(device), labels.to(device)
+
+            if args.attack == LABEL_FLIP:
+                mask = labels == int(args.label_flip_source)
+                if not torch.any(mask).item():
+                    continue
+                attack_images = images[mask]
+            else:
+                mask = labels != target_label
+                if not torch.any(mask).item():
+                    continue
+                attack_images = stamp_backdoor_trigger(args, images[mask])
+
+            outputs = model(attack_images)
+            _, pred_labels = torch.max(outputs, 1)
+            success += torch.sum(pred_labels == target_label).item()
+            total += pred_labels.numel()
+
+    if total == 0:
+        return 0.0
+    return success / total

@@ -16,6 +16,7 @@ BACKDOOR = 'backdoor'
 ATTACK_CHOICES = [NO_ATTACK, SIGN_FLIP, MIN_MAX, LABEL_FLIP, BACKDOOR]
 UPDATE_ATTACKS = {SIGN_FLIP, MIN_MAX}
 DATA_ATTACKS = {LABEL_FLIP, BACKDOOR}
+TARGETED_ATTACKS = {LABEL_FLIP, BACKDOOR}
 
 NORMALIZATION = {
     'mnist': {
@@ -43,6 +44,10 @@ def is_update_attack(args):
     return has_attack(args) and args.attack in UPDATE_ATTACKS
 
 
+def is_targeted_attack(args):
+    return args.attack in TARGETED_ATTACKS
+
+
 def select_malicious_clients(args):
     """Select a fixed malicious client set without perturbing round sampling."""
     num_malicious = int(round(args.malicious_ratio * args.num_users))
@@ -54,6 +59,49 @@ def select_malicious_clients(args):
     rng = np.random.default_rng(seed)
     clients = rng.choice(args.num_users, num_malicious, replace=False)
     return set(int(client_id) for client_id in clients)
+
+
+def sample_round_clients(args, num_selected, malicious_clients):
+    """Sample a round with a fixed malicious-client quota."""
+    num_selected = min(max(int(num_selected), 1), args.num_users)
+    malicious_clients = set(int(client_id) for client_id in malicious_clients)
+    benign_clients = [
+        client_id for client_id in range(args.num_users)
+        if client_id not in malicious_clients
+    ]
+
+    malicious_count = fixed_round_malicious_count(args, num_selected)
+    malicious_count = min(malicious_count, len(malicious_clients),
+                          num_selected)
+    benign_count = min(num_selected - malicious_count, len(benign_clients))
+
+    if malicious_count + benign_count < num_selected:
+        remaining = num_selected - malicious_count - benign_count
+        available_malicious = len(malicious_clients) - malicious_count
+        extra_malicious = min(remaining, available_malicious)
+        malicious_count += extra_malicious
+        remaining -= extra_malicious
+        if remaining > 0:
+            raise ValueError('not enough clients to sample this round')
+
+    selected = []
+    if malicious_count > 0:
+        selected.extend(
+            np.random.choice(sorted(malicious_clients), malicious_count,
+                             replace=False).tolist())
+    if benign_count > 0:
+        selected.extend(
+            np.random.choice(benign_clients, benign_count,
+                             replace=False).tolist())
+    np.random.shuffle(selected)
+    return np.asarray(selected, dtype=np.int64)
+
+
+def fixed_round_malicious_count(args, num_selected):
+    if args.attack == NO_ATTACK or args.malicious_ratio <= 0:
+        return 0
+    malicious_count = int(np.floor(args.malicious_ratio * num_selected + 0.5))
+    return min(max(malicious_count, 1), num_selected)
 
 
 def sample_backdoor_indices(args, dataset_size, is_malicious):
@@ -87,6 +135,12 @@ def apply_data_attack(args, images, labels, is_malicious,
                                backdoor_indices)
 
     return images, labels
+
+
+def stamp_backdoor_trigger(args, images):
+    triggered_images = images.clone()
+    _stamp_white_trigger(args, triggered_images)
+    return triggered_images
 
 
 def apply_update_attack(args, global_weights, local_weights, sample_counts,

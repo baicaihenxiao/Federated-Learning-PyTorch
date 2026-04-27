@@ -8,12 +8,10 @@ import math
 import time
 import pickle
 from pathlib import Path
-import numpy as np
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import torch
 try:
     from tensorboardX import SummaryWriter
 except ImportError:
@@ -28,8 +26,11 @@ except ImportError:
             pass
 
 from options import args_parser
-from attacks import apply_update_attack, has_attack, select_malicious_clients
-from update import LocalUpdate, test_inference
+from attacks import (
+    apply_update_attack, has_attack, sample_round_clients,
+    select_malicious_clients,
+)
+from update import LocalUpdate, test_attack_success_rate, test_inference
 from models import MLP, CNNMnist, CNNCifar, ResNet18Cifar, NUM_CLASSES
 from utils import (
     get_dataset, get_device, average_weights, get_logger, get_run_name,
@@ -94,6 +95,7 @@ def get_run_paths(run_name):
         'metrics': SAVE_OBJECTS_DIR / f'{run_name}.pkl',
         'loss_plot': SAVE_DIR / f'{run_name}_loss.png',
         'acc_plot': SAVE_DIR / f'{run_name}_acc.png',
+        'asr_plot': SAVE_DIR / f'{run_name}_asr.png',
         'temp_log': LOG_DIR / f'tmp_{run_name}.log',
         'final_log': LOG_DIR / f'{run_name}.log',
     }
@@ -177,8 +179,9 @@ def main():
         global_weights = global_model.state_dict()
 
         # Training
-        test_epochs, test_accuracy, test_losses = [], [], []
-        best_test_acc, best_test_epoch = 0.0, 0
+        test_epochs, mta_accuracy, test_losses = [], [], []
+        attack_success_rates = []
+        best_mta_acc, best_mta_epoch = 0.0, 0
 
         for epoch in range(args.epochs):
             round_start_time = time.time()
@@ -190,16 +193,19 @@ def main():
 
             global_model.train()
             m = max(int(args.frac * args.num_users), 1)
-            idxs_users = np.random.choice(
-                range(args.num_users), m, replace=False)
+            idxs_users = sample_round_clients(args, m, malicious_clients)
             selected_user_ids = sorted(int(idx) for idx in idxs_users)
             selected_malicious_flags = []
+            selected_malicious_ids = []
 
             for user_position, idx in enumerate(idxs_users, start=1):
                 user_start_time = time.time()
                 user_id = int(idx)
                 local_model = local_updates[user_id]
-                selected_malicious_flags.append(user_id in malicious_clients)
+                is_malicious = user_id in malicious_clients
+                selected_malicious_flags.append(is_malicious)
+                if is_malicious:
+                    selected_malicious_ids.append(user_id)
                 w, _ = local_model.update_weights(
                     model=copy.deepcopy(global_model),
                     global_round=current_epoch)
@@ -229,14 +235,17 @@ def main():
                  current_epoch == args.epochs)
             )
             if should_test:
-                test_acc, test_loss = test_inference(
+                mta_acc, test_loss = test_inference(
+                    args, global_model, test_dataset)
+                asr = test_attack_success_rate(
                     args, global_model, test_dataset)
                 test_epochs.append(current_epoch)
-                test_accuracy.append(test_acc)
+                mta_accuracy.append(mta_acc)
                 test_losses.append(test_loss)
-                if test_acc > best_test_acc:
-                    best_test_acc = test_acc
-                    best_test_epoch = current_epoch
+                attack_success_rates.append(asr)
+                if mta_acc > best_mta_acc:
+                    best_mta_acc = mta_acc
+                    best_mta_epoch = current_epoch
 
             now = time.time()
             round_time = now - round_start_time
@@ -249,8 +258,11 @@ def main():
             if m < args.num_users:
                 selected_users_summary += ' {}'.format(selected_user_ids)
             if has_attack(args):
-                selected_users_summary += ' | Malicious Selected: {}'.format(
-                    sum(selected_malicious_flags))
+                selected_users_summary += (
+                    ' | Malicious Selected: {} {}'.format(
+                        len(selected_malicious_ids),
+                        sorted(selected_malicious_ids))
+                )
 
             round_summary = (
                 'Round Summary : {}/{} | {}'.format(
@@ -258,11 +270,13 @@ def main():
             )
             if should_test:
                 round_summary += (
-                    ' | Test Loss: {:.4f} | Test Accuracy: {:.2f}% | '
-                    'Best Accuracy: {:.2f}% @ Round {}'.format(
-                        test_loss, 100*test_acc, 100*best_test_acc,
-                        best_test_epoch)
+                    ' | Test Loss: {:.4f} | MTA Acc: {:.2f}% | '
+                    'Best MTA Acc: {:.2f}% @ Round {}'.format(
+                        test_loss, 100*mta_acc, 100*best_mta_acc,
+                        best_mta_epoch)
                 )
+                if asr is not None:
+                    round_summary += ' | ASR: {:.2f}%'.format(100*asr)
             round_summary += (
                 ' | LR: {:.6f} | Progress: {} | Round Time: {} | '
                 'Elapsed Time: {}'.format(
@@ -273,31 +287,47 @@ def main():
             LOGGER.info(round_summary)
 
         if not test_epochs or test_epochs[-1] != args.epochs:
-            test_acc, test_loss = test_inference(
+            mta_acc, test_loss = test_inference(
                 args, global_model, test_dataset)
+            asr = test_attack_success_rate(args, global_model, test_dataset)
             test_epochs.append(args.epochs)
-            test_accuracy.append(test_acc)
+            mta_accuracy.append(mta_acc)
             test_losses.append(test_loss)
-            if test_acc > best_test_acc:
-                best_test_acc = test_acc
-                best_test_epoch = args.epochs
+            attack_success_rates.append(asr)
+            if mta_acc > best_mta_acc:
+                best_mta_acc = mta_acc
+                best_mta_epoch = args.epochs
         else:
-            test_acc = test_accuracy[-1]
+            mta_acc = mta_accuracy[-1]
             test_loss = test_losses[-1]
+            asr = attack_success_rates[-1]
 
-        test_accuracy_percent = [100*acc for acc in test_accuracy]
+        mta_accuracy_percent = [100*acc for acc in mta_accuracy]
+        asr_percent = [
+            None if rate is None else 100*rate
+            for rate in attack_success_rates
+        ]
 
         LOGGER.info(' \n Results after %s global rounds of training:',
                     args.epochs)
-        LOGGER.info("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
-        LOGGER.info("|---- Best Test Accuracy: {:.2f}% @ Round {}".format(
-            100*best_test_acc, best_test_epoch))
+        LOGGER.info("|---- MTA Acc: {:.2f}%".format(100*mta_acc))
+        LOGGER.info("|---- Best MTA Acc: {:.2f}% @ Round {}".format(
+            100*best_mta_acc, best_mta_epoch))
+        if asr is not None:
+            LOGGER.info("|---- ASR: {:.2f}%".format(100*asr))
 
         # Saving the test metrics:
         file_name = run_paths['metrics']
 
         with open(file_name, 'wb') as f:
-            pickle.dump([test_epochs, test_losses, test_accuracy], f)
+            pickle.dump({
+                'epochs': test_epochs,
+                'test_losses': test_losses,
+                'test_accuracy': mta_accuracy,
+                'mta_accuracy': mta_accuracy,
+                'attack_success_rates': attack_success_rates,
+                'asr': attack_success_rates,
+            }, f)
         LOGGER.info('Saved test metrics: %s', file_name)
 
         # Plot Test Loss curve
@@ -314,21 +344,36 @@ def main():
 
         # Plot Test Accuracy curve
         plt.figure()
-        plt.title('Test Accuracy vs Communication Rounds')
-        plt.plot(test_epochs, test_accuracy_percent, marker='o',
-                 label='Test')
-        plt.ylabel('Accuracy (%)')
+        plt.title('MTA Accuracy vs Communication Rounds')
+        plt.plot(test_epochs, mta_accuracy_percent, marker='o',
+                 label='MTA')
+        plt.ylabel('MTA accuracy (%)')
         plt.xlabel('Communication rounds')
         plt.legend()
         plt.tight_layout()
         acc_plot_path = run_paths['acc_plot']
         plt.savefig(acc_plot_path)
         plt.close()
-        LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
+        LOGGER.info('Saved MTA accuracy figure: %s', acc_plot_path)
+
+        if any(rate is not None for rate in attack_success_rates):
+            plt.figure()
+            plt.title('ASR vs Communication Rounds')
+            plt.plot(test_epochs, asr_percent, color='m', marker='o',
+                     label='ASR')
+            plt.ylabel('ASR (%)')
+            plt.xlabel('Communication rounds')
+            plt.legend()
+            plt.tight_layout()
+            asr_plot_path = run_paths['asr_plot']
+            plt.savefig(asr_plot_path)
+            plt.close()
+            LOGGER.info('Saved ASR figure: %s', asr_plot_path)
 
         LOGGER.info('Test epochs array: %s', test_epochs)
-        LOGGER.info('Test accuracy percent array by test epoch: %s',
-                    test_accuracy_percent)
+        LOGGER.info('MTA accuracy percent array by test epoch: %s',
+                    mta_accuracy_percent)
+        LOGGER.info('ASR percent array by test epoch: %s', asr_percent)
         LOGGER.info('Test loss array by test epoch: %s', test_losses)
 
         LOGGER.info('\n Total Run Time: %s',

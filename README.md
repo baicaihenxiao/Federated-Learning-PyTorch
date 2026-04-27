@@ -104,10 +104,20 @@ done
 ```
 
 `--malicious_ratio=0` is fully benign training even when `--attack` is set.
+For each communication round, the selected client set uses a fixed malicious
+quota of `round(malicious_ratio * selected_clients)`. For example, with
+`--num_users=100`, `--frac=0.1`, and `--malicious_ratio=0.2`, each round
+selects 2 malicious clients and 8 benign clients.
 Backdoor poisoning samples 20% of each malicious client's local images every
 round, stamps a normalized white trigger in the bottom-right corner, and resets
 poisoned labels to class 7 by default. The trigger is 3x3 for MNIST and 5x5 for
 CIFAR-10.
+
+Federated logs and saved metrics report main-task accuracy (`MTA Acc`) on the
+clean test set. Targeted attacks also report attack success rate (`ASR`) each
+test round: label-flip ASR is the rate of true source-class test samples
+predicted as the target class, and backdoor ASR is the rate of triggered
+non-target test samples predicted as the target class.
 
 You can change the default values of other parameters to simulate different conditions. Refer to the options section.
 
