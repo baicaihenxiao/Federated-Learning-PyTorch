@@ -437,11 +437,11 @@ def _normalize_or_uniform(values):
 
 def _select_pritrust_audited_layers(args, keys, client_ids, round_number):
     layer_count = len(keys)
-    requested_budget = int(getattr(args, 'pritrust_audit_layers', 0))
-    if requested_budget <= 0:
-        audit_budget = max(1, int(math.ceil(math.sqrt(layer_count))))
+    requested_budget = getattr(args, 'pritrust_audit_layers', None)
+    if requested_budget is None:
+        audit_budget = max(1, int(math.ceil(0.5 * layer_count)))
     else:
-        audit_budget = requested_budget
+        audit_budget = int(requested_budget)
     audit_budget = min(max(audit_budget, 1), layer_count)
 
     seed_material = _pritrust_round_seed(args, client_ids, round_number)
@@ -511,7 +511,7 @@ def _pritrust_consistency_scores(args, global_weights,
                 indicators.append(1.0 if projection >= 0.0 else 0.0)
                 indicators.append(
                     1.0 if distance <= (
-                        float(getattr(args, 'pritrust_theta_tem', 10.0)) *
+                        float(getattr(args, 'pritrust_theta_tem', 1.5)) *
                         temporal_norm) else 0.0)
 
             if spatial_norm > eps:
@@ -520,7 +520,7 @@ def _pritrust_consistency_scores(args, global_weights,
                 indicators.append(1.0 if projection >= 0.0 else 0.0)
                 indicators.append(
                     1.0 if distance <= (
-                        float(getattr(args, 'pritrust_theta_spa', 10.0)) *
+                        float(getattr(args, 'pritrust_theta_spa', 1.5)) *
                         spatial_norm) else 0.0)
 
             score_sums[position] += sum(indicators) / len(indicators)
@@ -540,8 +540,8 @@ def _layer_delta_vectors(local_weights, global_weights, key):
 
 
 def _passes_amplitude_band(args, update_norm, average_norm):
-    alpha_min = float(getattr(args, 'pritrust_alpha_min', 0.05))
-    alpha_max = float(getattr(args, 'pritrust_alpha_max', 20.0))
+    alpha_min = float(getattr(args, 'pritrust_alpha_min', 0.5))
+    alpha_max = float(getattr(args, 'pritrust_alpha_max', 1.5))
     lower = alpha_min * average_norm
     upper = alpha_max * average_norm
     return lower <= update_norm <= upper
@@ -552,7 +552,7 @@ def _adaptive_filter_positions(args, scores):
     median_score = float(torch.median(score_tensor).item())
     deviations = torch.abs(score_tensor - median_score)
     mad_score = float(torch.median(deviations).item())
-    gamma = float(getattr(args, 'pritrust_gamma', 1.0))
+    gamma = float(getattr(args, 'pritrust_gamma', 1.5))
     if mad_score > 0.0:
         threshold = median_score - gamma * mad_score
     else:

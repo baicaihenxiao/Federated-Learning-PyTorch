@@ -244,20 +244,20 @@ def args_parser(experiment=None):
     parser.add_argument('--pdfl_similarity_threshold', type=float, default=0.0,
                         help='cosine-similarity threshold for plaintext PDFL '
                         'client clustering')
-    parser.add_argument('--pritrust_audit_layers', type=int, default=0,
+    parser.add_argument('--pritrust_audit_layers', type=int, default=None,
                         help='number of stochastic audited layers K_t for '
-                        'PriTrust-FL; set 0 to use ceil(sqrt(L))')
-    parser.add_argument('--pritrust_alpha_min', type=float, default=0.05,
+                        'PriTrust-FL; default uses ceil(0.5L)')
+    parser.add_argument('--pritrust_alpha_min', type=float, default=0.5,
                         help='PriTrust-FL lower amplitude-band coefficient')
-    parser.add_argument('--pritrust_alpha_max', type=float, default=20.0,
+    parser.add_argument('--pritrust_alpha_max', type=float, default=1.5,
                         help='PriTrust-FL upper amplitude-band coefficient')
-    parser.add_argument('--pritrust_theta_tem', type=float, default=10.0,
+    parser.add_argument('--pritrust_theta_tem', type=float, default=1.5,
                         help='PriTrust-FL temporal distance threshold '
                         'coefficient')
-    parser.add_argument('--pritrust_theta_spa', type=float, default=10.0,
+    parser.add_argument('--pritrust_theta_spa', type=float, default=1.5,
                         help='PriTrust-FL spatial distance threshold '
                         'coefficient')
-    parser.add_argument('--pritrust_gamma', type=float, default=1.0,
+    parser.add_argument('--pritrust_gamma', type=float, default=1.5,
                         help='PriTrust-FL adaptive filtering coefficient')
     parser.add_argument('--pritrust_rho', type=float, default=0.8,
                         help='PriTrust-FL historical trust memory factor')
@@ -334,9 +334,9 @@ def args_parser(experiment=None):
                      'and 1')
     if not -1 <= args.pdfl_similarity_threshold <= 1:
         parser.error('--pdfl_similarity_threshold must be between -1 and 1')
-    if args.pritrust_audit_layers < 0:
-        parser.error('--pritrust_audit_layers must be greater than or equal '
-                     'to 0')
+    if (args.pritrust_audit_layers is not None and
+            args.pritrust_audit_layers < 1):
+        parser.error('--pritrust_audit_layers must be at least 1 when set')
     if args.pritrust_alpha_min < 0:
         parser.error('--pritrust_alpha_min must be greater than or equal to 0')
     if args.pritrust_alpha_max < args.pritrust_alpha_min:

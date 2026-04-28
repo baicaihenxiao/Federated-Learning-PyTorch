@@ -348,6 +348,7 @@ def main():
 
         with open(file_name, 'wb') as f:
             pickle.dump({
+                'args': vars(args),
                 'epochs': test_epochs,
                 'test_losses': test_losses,
                 'test_accuracy': mta_accuracy,
