@@ -42,6 +42,22 @@ python src/federated_main.py --dataset=cifar --gpu=0 --iid=1 --epochs=10
 python src/federated_main.py --dataset=cifar --gpu=0 --iid=0 --dirichlet_alpha=0.1 --epochs=10
 ```
 
+Robust aggregation baselines are selected with `--defense`. `fedavg` is the
+default undefended baseline. Krum and Trimmed Mean implement classical robust
+aggregation. `shieldfl`, `pdfl`, and `pritrust_fl` implement only the plaintext
+defense logic for those methods; their homomorphic-encryption,
+secret-sharing, differential-privacy, or other privacy-preserving protocols are
+not included.
+
+Examples:
+```
+python src/federated_main.py --dataset=mnist --defense=krum --attack=sign_flip --malicious_ratio=0.2
+python src/federated_main.py --dataset=mnist --defense=trimmed_mean --attack=min_max --malicious_ratio=0.2
+python src/federated_main.py --dataset=cifar --defense=shieldfl --attack=backdoor --malicious_ratio=0.1
+python src/federated_main.py --dataset=cifar --defense=pdfl --attack=sign_flip --malicious_ratio=0.2
+python src/federated_main.py --dataset=cifar --defense=pritrust_fl --attack=backdoor --malicious_ratio=0.1
+```
+
 ### Typical Commands
 
 MNIST baseline:
@@ -131,6 +147,12 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--lr:```       Learning rate. Default depends on dataset and experiment setting.
 * ```--verbose:```  Detailed log outputs. Default: 0. Set to 1 to activate.
 * ```--seed:```     Random Seed. Default set to 1.
+* ```--defense:```  Federated aggregation defense. Options: `fedavg`, `krum`, `trimmed_mean`, `shieldfl`, `pdfl`, `pritrust_fl`. Default: `fedavg`.
+* ```--defense_byzantine_clients:``` Assumed number of Byzantine clients selected per round for Krum and Trimmed Mean. Defaults to the count inferred from `--malicious_ratio`.
+* ```--trimmed_mean_trim_ratio:``` Fraction of selected clients trimmed from each coordinate tail for Trimmed Mean. Defaults to the count inferred from `--malicious_ratio`.
+* ```--shieldfl_similarity_threshold:``` Mean cosine-similarity threshold for plaintext ShieldFL trust weights. Default: `0.0`.
+* ```--pdfl_similarity_threshold:``` Cosine-similarity threshold for plaintext PDFL clustering. Default: `0.0`.
+* ```--pritrust_momentum:``` EMA momentum for PriTrust-FL client trust memory. Default: `0.8`.
 * ```--attack:```   Federated attack. Options: `none`, `sign_flip`, `min_max`, `label_flip`, `backdoor`. Default: `none`.
 * ```--malicious_ratio:``` Fraction of total clients controlled by the adversary. Default: `0.0`.
 * ```--sign_flip_lambda:``` Sign-flip amplification factor. Default: `5.0`.

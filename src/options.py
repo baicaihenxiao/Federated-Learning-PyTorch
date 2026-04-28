@@ -5,6 +5,7 @@
 import argparse
 
 from attacks import ATTACK_CHOICES, NO_ATTACK
+from defenses import DEFENSE_CHOICES, normalize_defense_name
 
 
 MAX_RANDOM_SEED = 2**32 - 1
@@ -31,6 +32,13 @@ def seed_value(value):
             f'--seed must be between 0 and {MAX_RANDOM_SEED}, or "random"')
 
     return seed
+
+
+def defense_value(value):
+    try:
+        return normalize_defense_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
 
 
 DEFAULT_MODELS = {
@@ -216,6 +224,29 @@ def args_parser(experiment=None):
                         'or global rounds during training; set 0 to disable '
                         'intermediate test evaluation')
 
+    # defense arguments
+    parser.add_argument('--defense', type=defense_value, default='fedavg',
+                        choices=DEFENSE_CHOICES,
+                        help='federated aggregation defense: fedavg, krum, '
+                        'trimmed_mean, shieldfl, pdfl, or pritrust_fl')
+    parser.add_argument('--defense_byzantine_clients', type=int, default=None,
+                        help='assumed number of Byzantine clients selected per '
+                        'round for Krum/Trimmed Mean; default infers it from '
+                        '--malicious_ratio')
+    parser.add_argument('--trimmed_mean_trim_ratio', type=float, default=None,
+                        help='fraction of selected clients to trim from each '
+                        'coordinate tail; default infers the trim count from '
+                        '--malicious_ratio')
+    parser.add_argument('--shieldfl_similarity_threshold', type=float,
+                        default=0.0,
+                        help='minimum mean cosine similarity used as plaintext '
+                        'ShieldFL trust mass')
+    parser.add_argument('--pdfl_similarity_threshold', type=float, default=0.0,
+                        help='cosine-similarity threshold for plaintext PDFL '
+                        'client clustering')
+    parser.add_argument('--pritrust_momentum', type=float, default=0.8,
+                        help='EMA momentum for PriTrust-FL client trust memory')
+
     # attack arguments
     parser.add_argument('--attack', type=str.lower, default=NO_ATTACK,
                         choices=ATTACK_CHOICES,
@@ -270,6 +301,20 @@ def args_parser(experiment=None):
     args = apply_training_preset(args)
     if args.test_interval < 0:
         parser.error('--test_interval must be greater than or equal to 0')
+    if (args.defense_byzantine_clients is not None and
+            args.defense_byzantine_clients < 0):
+        parser.error('--defense_byzantine_clients must be greater than or '
+                     'equal to 0')
+    if (args.trimmed_mean_trim_ratio is not None and
+            not 0 <= args.trimmed_mean_trim_ratio < 0.5):
+        parser.error('--trimmed_mean_trim_ratio must be in [0, 0.5)')
+    if not -1 <= args.shieldfl_similarity_threshold <= 1:
+        parser.error('--shieldfl_similarity_threshold must be between -1 '
+                     'and 1')
+    if not -1 <= args.pdfl_similarity_threshold <= 1:
+        parser.error('--pdfl_similarity_threshold must be between -1 and 1')
+    if not 0 <= args.pritrust_momentum <= 1:
+        parser.error('--pritrust_momentum must be between 0 and 1')
     if args.dirichlet_alpha <= 0:
         parser.error('--dirichlet_alpha must be greater than 0')
     if args.malicious_ratio < 0 or args.malicious_ratio > 1:

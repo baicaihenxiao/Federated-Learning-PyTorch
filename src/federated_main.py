@@ -30,12 +30,12 @@ from attacks import (
     apply_update_attack, has_attack, sample_round_clients,
     select_malicious_clients,
 )
+from defenses import aggregate_weights, normalize_defense_name
 from update import LocalUpdate, test_attack_success_rate, test_inference
 from models import MLP, CNNMnist, CNNCifar, ResNet18Cifar, NUM_CLASSES
 from utils import (
-    get_dataset, get_device, average_weights, get_logger, get_run_name,
-    log_args, log_git_commit, promote_log_file, set_log_file, set_seed,
-    format_run_time,
+    get_dataset, get_device, get_logger, get_run_name, log_args,
+    log_git_commit, promote_log_file, set_log_file, set_seed, format_run_time,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -86,7 +86,10 @@ def get_federated_run_name(args):
         'fed',
         ['dataset', 'model', 'epochs', 'num_users', 'frac', 'iid',
          'dirichlet_alpha', 'norm', 'local_ep', 'local_bs', 'optimizer',
-         'lr', 'attack', 'malicious_ratio', 'test_interval'],
+         'lr', 'defense', 'defense_byzantine_clients',
+         'trimmed_mean_trim_ratio', 'shieldfl_similarity_threshold',
+         'pdfl_similarity_threshold', 'pritrust_momentum', 'attack',
+         'malicious_ratio', 'test_interval'],
     )
 
 
@@ -126,6 +129,7 @@ def main():
         device = get_device(args)
         args.device = str(device)
         args.seed = set_seed(args.seed)
+        args.defense = normalize_defense_name(args.defense)
         LOGGER.info('Using device: %s', device)
         log_args(args)
 
@@ -182,6 +186,7 @@ def main():
         test_epochs, mta_accuracy, test_losses = [], [], []
         attack_success_rates = []
         best_mta_acc, best_mta_epoch = 0.0, 0
+        aggregation_state = {}
 
         for epoch in range(args.epochs):
             round_start_time = time.time()
@@ -194,6 +199,7 @@ def main():
             global_model.train()
             m = max(int(args.frac * args.num_users), 1)
             idxs_users = sample_round_clients(args, m, malicious_clients)
+            selected_client_ids_ordered = [int(idx) for idx in idxs_users]
             selected_user_ids = sorted(int(idx) for idx in idxs_users)
             selected_malicious_flags = []
             selected_malicious_ids = []
@@ -223,8 +229,10 @@ def main():
                 selected_malicious_flags)
 
             # update global weights
-            global_weights = average_weights(local_weights,
-                                             local_sample_counts)
+            global_weights, defense_info = aggregate_weights(
+                args, global_weights, local_weights, local_sample_counts,
+                client_ids=selected_client_ids_ordered,
+                state=aggregation_state)
 
             # update global weights
             global_model.load_state_dict(global_weights)
@@ -268,6 +276,22 @@ def main():
                 'Round Summary : {}/{} | {}'.format(
                     current_epoch, args.epochs, selected_users_summary)
             )
+            if args.defense != 'fedavg':
+                defense_summary = (
+                    ' | Defense: {} | Defense Selected: {}/{}'.format(
+                        defense_info.get('defense', args.defense),
+                        defense_info.get('selected_count', m), m)
+                )
+                if 'fallback' in defense_info:
+                    defense_summary += ' | Defense Fallback: {}'.format(
+                        defense_info['fallback'])
+                if args.verbose and 'selected_clients' in defense_info:
+                    defense_summary += ' {}'.format(
+                        defense_info['selected_clients'])
+                if args.verbose and 'anchor_client' in defense_info:
+                    defense_summary += ' | Anchor Client: {}'.format(
+                        defense_info['anchor_client'])
+                round_summary += defense_summary
             if should_test:
                 round_summary += (
                     ' | Test Loss: {:.4f} | MTA Acc: {:.2f}% | '
