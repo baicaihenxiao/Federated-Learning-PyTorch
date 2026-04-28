@@ -88,8 +88,11 @@ def get_federated_run_name(args):
          'dirichlet_alpha', 'norm', 'local_ep', 'local_bs', 'optimizer',
          'lr', 'defense', 'defense_byzantine_clients',
          'trimmed_mean_trim_ratio', 'shieldfl_similarity_threshold',
-         'pdfl_similarity_threshold', 'pritrust_momentum', 'attack',
-         'malicious_ratio', 'test_interval'],
+         'pdfl_similarity_threshold', 'pritrust_audit_layers',
+         'pritrust_alpha_min', 'pritrust_alpha_max',
+         'pritrust_theta_tem', 'pritrust_theta_spa', 'pritrust_gamma',
+         'pritrust_rho', 'pritrust_kappa', 'pritrust_security_bits',
+         'attack', 'malicious_ratio', 'test_interval'],
     )
 
 
@@ -288,9 +291,9 @@ def main():
                 if args.verbose and 'selected_clients' in defense_info:
                     defense_summary += ' {}'.format(
                         defense_info['selected_clients'])
-                if args.verbose and 'anchor_client' in defense_info:
-                    defense_summary += ' | Anchor Client: {}'.format(
-                        defense_info['anchor_client'])
+                if args.verbose and 'audited_layers' in defense_info:
+                    defense_summary += ' | Audited Layers: {}'.format(
+                        defense_info['audited_layers'])
                 round_summary += defense_summary
             if should_test:
                 round_summary += (

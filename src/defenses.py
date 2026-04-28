@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import copy
+import hashlib
 import math
 
 import torch
@@ -367,60 +368,226 @@ def _pritrust_fl(args, global_weights, local_weights, sample_counts,
             'fallback': 'no floating parameters',
         }
 
-    vectors = _delta_matrix(local_weights, global_weights, keys)
-    similarities, norms = _cosine_matrix(vectors)
-    anchor_position = _cosine_medoid(similarities, sample_counts)
-    unit_vectors, _ = _safe_normalize(vectors)
-    anchor = unit_vectors[anchor_position]
-    direction_trust = torch.clamp(unit_vectors.matmul(anchor), min=0.0)
-    norm_trust = _norm_consistency_scores(norms)
-    instant_trust = direction_trust * norm_trust
-
     trust_memory = state.setdefault('pritrust_client_trust', {})
-    momentum = float(getattr(args, 'pritrust_momentum', 0.8))
-    effective_trust = []
-    for client_id, instant_score in zip(client_ids, instant_trust):
-        client_id = int(client_id)
-        instant_score = float(instant_score.item())
-        previous_score = float(trust_memory.get(client_id, 1.0))
-        updated_score = momentum * previous_score + (
-            1.0 - momentum) * instant_score
-        trust_memory[client_id] = updated_score
-        effective_trust.append(instant_score * updated_score)
-
-    coefficients = [
-        float(sample_count) * float(score)
-        for sample_count, score in zip(sample_counts, effective_trust)
+    previous_trust = [
+        float(trust_memory.get(int(client_id), 1.0))
+        for client_id in client_ids
     ]
-    if sum(coefficients) <= 0:
-        return average_weights(local_weights, sample_counts), {
-            'defense': PRITRUST_FL,
-            'selected_count': len(local_weights),
-            'fallback': 'zero trust scores',
-        }
+    participant_weights = _normalize_or_uniform(previous_trust)
+    previous_global_weights = state.get('pritrust_previous_global_weights')
+    round_number = int(state.get('pritrust_round', 0)) + 1
+    audited_keys = _select_pritrust_audited_layers(
+        args, keys, client_ids, round_number)
 
-    return _weighted_average_state(local_weights, coefficients), {
+    client_scores = _pritrust_consistency_scores(
+        args, global_weights, previous_global_weights, local_weights,
+        audited_keys, participant_weights)
+    retained_positions, threshold, median_score, mad_score = (
+        _adaptive_filter_positions(args, client_scores))
+
+    updated_trust = []
+    rho = float(getattr(args, 'pritrust_rho', 0.8))
+    kappa = float(getattr(args, 'pritrust_kappa', 0.5))
+    retained_set = set(retained_positions)
+    for position, (client_id, previous_score, current_score) in enumerate(
+            zip(client_ids, previous_trust, client_scores)):
+        if position in retained_set:
+            new_score = rho * previous_score + (1.0 - rho) * current_score
+        else:
+            new_score = kappa * previous_score
+        new_score = min(max(float(new_score), 0.0), 1.0)
+        trust_memory[int(client_id)] = new_score
+        updated_trust.append(new_score)
+
+    retained_trust = [updated_trust[position] for position in retained_positions]
+    aggregation_weights = _normalize_or_uniform(retained_trust)
+    aggregated = _trust_weighted_delta_update(
+        global_weights, local_weights, retained_positions, aggregation_weights)
+
+    state['pritrust_previous_global_weights'] = copy.deepcopy(global_weights)
+    state['pritrust_round'] = round_number
+    state['pritrust_last_audited_layers'] = list(audited_keys)
+
+    retained_clients = [int(client_ids[position])
+                        for position in retained_positions]
+    return aggregated, {
         'defense': PRITRUST_FL,
-        'selected_count': len(local_weights),
-        'anchor_client': int(client_ids[anchor_position]),
-        'min_trust': min(effective_trust),
-        'max_trust': max(effective_trust),
+        'selected_count': len(retained_positions),
+        'selected_clients': retained_clients,
+        'audited_layers': list(audited_keys),
+        'median_score': median_score,
+        'mad_score': mad_score,
+        'filter_threshold': threshold,
+        'min_score': min(client_scores),
+        'max_score': max(client_scores),
+        'min_trust': min(updated_trust),
+        'max_trust': max(updated_trust),
     }
 
 
-def _cosine_medoid(similarities, sample_counts):
-    sample_weights = torch.tensor(sample_counts, dtype=similarities.dtype)
-    weighted = similarities * sample_weights.view(1, -1)
-    weighted = weighted - torch.diag(torch.diag(weighted))
-    denom = max(float(sum(sample_counts) - min(sample_counts)), 1.0)
-    centrality = weighted.sum(dim=1) / denom
-    return int(torch.argmax(centrality).item())
+def _normalize_or_uniform(values):
+    values = [max(float(value), 0.0) for value in values]
+    total = float(sum(values))
+    if total > 0:
+        return [value / total for value in values]
+    if not values:
+        return []
+    return [1.0 / len(values) for _ in values]
 
 
-def _norm_consistency_scores(norms, eps=1e-12):
-    positive_norms = norms[norms > eps]
-    if positive_norms.numel() == 0:
-        return torch.zeros_like(norms)
-    median_norm = torch.median(positive_norms)
-    ratio = torch.clamp(norms / torch.clamp(median_norm, min=eps), min=eps)
-    return torch.minimum(ratio, 1.0 / ratio).clamp(min=0.0, max=1.0)
+def _select_pritrust_audited_layers(args, keys, client_ids, round_number):
+    layer_count = len(keys)
+    requested_budget = int(getattr(args, 'pritrust_audit_layers', 0))
+    if requested_budget <= 0:
+        audit_budget = max(1, int(math.ceil(math.sqrt(layer_count))))
+    else:
+        audit_budget = requested_budget
+    audit_budget = min(max(audit_budget, 1), layer_count)
+
+    seed_material = _pritrust_round_seed(args, client_ids, round_number)
+    scored_layers = []
+    for position, key in enumerate(keys):
+        material = '{}|{}|{}'.format(seed_material, position, key)
+        digest = hashlib.sha256(material.encode('utf-8')).digest()
+        score = int.from_bytes(digest, byteorder='big', signed=False)
+        scored_layers.append((score, position, key))
+
+    selected = sorted(scored_layers, reverse=True)[:audit_budget]
+    selected_positions = sorted(position for _, position, _ in selected)
+    return [keys[position] for position in selected_positions]
+
+
+def _pritrust_round_seed(args, client_ids, round_number):
+    participant_serialization = ','.join(
+        str(int(client_id)) for client_id in sorted(client_ids))
+    base_seed = getattr(args, 'seed', None)
+    security_bits = int(getattr(args, 'pritrust_security_bits', 128))
+    material = '{}|{}|{}|{}'.format(
+        base_seed, security_bits, round_number, participant_serialization)
+    return hashlib.sha256(material.encode('utf-8')).hexdigest()
+
+
+def _pritrust_consistency_scores(args, global_weights,
+                                 previous_global_weights, local_weights,
+                                 audited_keys, participant_weights):
+    client_count = len(local_weights)
+    score_sums = [0.0 for _ in range(client_count)]
+    eps = 1e-12
+
+    for key in audited_keys:
+        deltas = _layer_delta_vectors(local_weights, global_weights, key)
+        layer_norms = torch.sum(deltas * deltas, dim=1)
+        weight_tensor = torch.tensor(
+            participant_weights, dtype=deltas.dtype, device=deltas.device)
+        avg_norm = float(torch.sum(weight_tensor * layer_norms).item())
+
+        spatial_anchor = torch.sum(
+            deltas * weight_tensor.view(-1, 1), dim=0)
+        spatial_norm = float(torch.dot(spatial_anchor, spatial_anchor).item())
+
+        temporal_anchor = None
+        temporal_norm = 0.0
+        if previous_global_weights is not None and key in previous_global_weights:
+            temporal_anchor = (
+                global_weights[key].detach().to(device='cpu',
+                                                dtype=torch.float32) -
+                previous_global_weights[key].detach().to(
+                    device='cpu', dtype=torch.float32)
+            ).reshape(-1)
+            temporal_norm = float(torch.dot(temporal_anchor,
+                                            temporal_anchor).item())
+
+        for position in range(client_count):
+            update = deltas[position]
+            update_norm = float(layer_norms[position].item())
+            indicators = []
+            indicators.append(
+                1.0 if _passes_amplitude_band(
+                    args, update_norm, avg_norm) else 0.0)
+
+            if temporal_anchor is not None and temporal_norm > eps:
+                projection = float(torch.dot(update, temporal_anchor).item())
+                distance = update_norm + temporal_norm - 2.0 * projection
+                indicators.append(1.0 if projection >= 0.0 else 0.0)
+                indicators.append(
+                    1.0 if distance <= (
+                        float(getattr(args, 'pritrust_theta_tem', 10.0)) *
+                        temporal_norm) else 0.0)
+
+            if spatial_norm > eps:
+                projection = float(torch.dot(update, spatial_anchor).item())
+                distance = update_norm + spatial_norm - 2.0 * projection
+                indicators.append(1.0 if projection >= 0.0 else 0.0)
+                indicators.append(
+                    1.0 if distance <= (
+                        float(getattr(args, 'pritrust_theta_spa', 10.0)) *
+                        spatial_norm) else 0.0)
+
+            score_sums[position] += sum(indicators) / len(indicators)
+
+    audited_count = float(len(audited_keys))
+    return [score_sum / audited_count for score_sum in score_sums]
+
+
+def _layer_delta_vectors(local_weights, global_weights, key):
+    global_value = global_weights[key].detach().to(
+        device='cpu', dtype=torch.float32)
+    return torch.stack([
+        (weights[key].detach().to(device='cpu', dtype=torch.float32) -
+         global_value).reshape(-1)
+        for weights in local_weights
+    ], dim=0)
+
+
+def _passes_amplitude_band(args, update_norm, average_norm):
+    alpha_min = float(getattr(args, 'pritrust_alpha_min', 0.05))
+    alpha_max = float(getattr(args, 'pritrust_alpha_max', 20.0))
+    lower = alpha_min * average_norm
+    upper = alpha_max * average_norm
+    return lower <= update_norm <= upper
+
+
+def _adaptive_filter_positions(args, scores):
+    score_tensor = torch.tensor(scores, dtype=torch.float32)
+    median_score = float(torch.median(score_tensor).item())
+    deviations = torch.abs(score_tensor - median_score)
+    mad_score = float(torch.median(deviations).item())
+    gamma = float(getattr(args, 'pritrust_gamma', 1.0))
+    if mad_score > 0.0:
+        threshold = median_score - gamma * mad_score
+    else:
+        threshold = median_score
+
+    retained = [
+        position for position, score in enumerate(scores)
+        if score >= threshold
+    ]
+    if not retained:
+        retained = [
+            position for position, score in enumerate(scores)
+            if score >= median_score
+        ]
+    if not retained:
+        best_position = max(range(len(scores)), key=lambda idx: scores[idx])
+        retained = [best_position]
+    return retained, threshold, median_score, mad_score
+
+
+def _trust_weighted_delta_update(global_weights, local_weights,
+                                 retained_positions, aggregation_weights):
+    result = copy.deepcopy(global_weights)
+    best_position = retained_positions[
+        max(range(len(aggregation_weights)),
+            key=lambda idx: aggregation_weights[idx])]
+    for key, global_value in global_weights.items():
+        if torch.is_floating_point(global_value):
+            aggregate_delta = torch.zeros_like(global_value)
+            for retained_position, weight in zip(retained_positions,
+                                                 aggregation_weights):
+                local_value = local_weights[retained_position][key].to(
+                    device=global_value.device, dtype=global_value.dtype)
+                aggregate_delta += (local_value - global_value) * float(weight)
+            result[key] = global_value.clone() + aggregate_delta
+        else:
+            result[key] = local_weights[best_position][key].clone()
+    return result

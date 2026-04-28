@@ -47,7 +47,10 @@ default undefended baseline. Krum and Trimmed Mean implement classical robust
 aggregation. `shieldfl`, `pdfl`, and `pritrust_fl` implement only the plaintext
 defense logic for those methods; their homomorphic-encryption,
 secret-sharing, differential-privacy, or other privacy-preserving protocols are
-not included.
+not included. The plaintext PriTrust-FL implementation uses post-submission
+stochastic audited layer selection, temporal and spatial anchors, binary
+consistency indicators, adaptive filtering, historical trust update, and
+trust-weighted aggregation.
 
 Examples:
 ```
@@ -152,7 +155,15 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--trimmed_mean_trim_ratio:``` Fraction of selected clients trimmed from each coordinate tail for Trimmed Mean. Defaults to the count inferred from `--malicious_ratio`.
 * ```--shieldfl_similarity_threshold:``` Mean cosine-similarity threshold for plaintext ShieldFL trust weights. Default: `0.0`.
 * ```--pdfl_similarity_threshold:``` Cosine-similarity threshold for plaintext PDFL clustering. Default: `0.0`.
-* ```--pritrust_momentum:``` EMA momentum for PriTrust-FL client trust memory. Default: `0.8`.
+* ```--pritrust_audit_layers:``` Number of stochastic audited layers for PriTrust-FL. Default: `0`, which uses `ceil(sqrt(L))`.
+* ```--pritrust_alpha_min:``` Lower amplitude-band coefficient for PriTrust-FL. Default: `0.05`.
+* ```--pritrust_alpha_max:``` Upper amplitude-band coefficient for PriTrust-FL. Default: `20.0`.
+* ```--pritrust_theta_tem:``` Temporal distance threshold coefficient for PriTrust-FL. Default: `10.0`.
+* ```--pritrust_theta_spa:``` Spatial distance threshold coefficient for PriTrust-FL. Default: `10.0`.
+* ```--pritrust_gamma:``` Adaptive filtering coefficient for PriTrust-FL. Default: `1.0`.
+* ```--pritrust_rho:``` Historical trust memory factor for PriTrust-FL. Default: `0.8`.
+* ```--pritrust_kappa:``` Punishment factor for filtered PriTrust-FL clients. Default: `0.5`.
+* ```--pritrust_security_bits:``` Security-bit value mixed into the plaintext stochastic audit seed. Default: `128`.
 * ```--attack:```   Federated attack. Options: `none`, `sign_flip`, `min_max`, `label_flip`, `backdoor`. Default: `none`.
 * ```--malicious_ratio:``` Fraction of total clients controlled by the adversary. Default: `0.0`.
 * ```--sign_flip_lambda:``` Sign-flip amplification factor. Default: `5.0`.
