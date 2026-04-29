@@ -1,65 +1,78 @@
 #!/usr/bin/env python3
-"""End-to-end driver for the PriTrust-FL experiment section (1 seed,
-plaintext, CIFAR Non-IID lr=0.03).
+"""Run and report the full PriTrust-FL experiment section.
 
-This single file does four things:
-    1. sweep    -- runs every (dataset, iid, defense, attack, ratio) config
-                   on the GPUs you specify, resumable
-    2. aggregate-- scans save/objects/*.pkl and prints LaTeX rows for
-                   Tables 1, 2, 3 to stdout, also writes a flat CSV
-    3. plot     -- writes the four figure PDFs (signflip / minmax /
-                   labelflip / backdoor sweeps)
-    4. fill     -- replaces XX.XX placeholders inside an experiment-section
-                   .tex file with the aggregated numbers
+This is intentionally a single-file server runner. It wraps the existing
+``src/federated_main.py`` training entry point and then builds the paper
+artifacts from the saved pickles/logs:
 
-Defaults run all four steps in order. Run from the repo root.
+    * clean baseline table at 0% malicious clients
+    * sign-flip and Min-Max robustness figures
+    * untargeted 30% worst-case table
+    * label-flip and backdoor ASR/MTA figures
+    * targeted 30% worst-case table
 
-Usage:
-    # Full pipeline on two GPUs, also fill section.tex in-place:
-    python scripts/run_experiments.py --gpus 0 1 --fill section.tex
+Typical server usage from the repo root:
 
-    # Just dispatch the sweep (e.g. on a remote server):
-    python scripts/run_experiments.py sweep --gpus 0 1
+    python3 scripts/run_experiments.py all --gpus 0 1 --tasks-per-gpu 2
 
-    # Reaggregate, replot and refill after the sweep finishes:
-    python scripts/run_experiments.py report --fill section.tex
+Useful split workflow:
 
-    # Preview the matrix without running anything:
-    python scripts/run_experiments.py sweep --dry_run
+    python3 scripts/run_experiments.py sweep --gpus 0 1 --tasks-per-gpu 2
+    python3 scripts/run_experiments.py report
 
-The experiment matrix follows the latex section verbatim:
-    seeds              = {1}
-    settings           = MNIST IID, MNIST Non-IID, CIFAR IID, CIFAR Non-IID
-    defenses           = fedavg, krum, trimmed_mean, shieldfl, pdfl, pritrust_fl
-    attacks (ratios)   = none (0), sign_flip/min_max/label_flip/backdoor
-                         at 0.1, 0.2, 0.3
-    pritrust_fl hyper  = K_t = ceil(0.5 L); alpha=[0.5,1.5];
-                         theta_tem=theta_spa=1.5; gamma=1.5; rho=0.8; kappa=0.5
+The default pipeline runs one seed and the repo's plaintext training/defense
+logic only. Optional efficiency/privacy-protocol estimates are opt-in through
+``--with-efficiency`` or the explicit ``efficiency`` mode.
+
+The runner is resumable: before dispatching a config, it scans
+``save/objects/*.pkl`` and skips matching completed runs.
 """
 
 import argparse
 import csv
+import json
+import math
 import multiprocessing as mp
 import pickle
 import queue
 import re
+import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-# ---------------------------------------------------------------------
-# Paths and constants
-# ---------------------------------------------------------------------
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SAVE_OBJECTS = PROJECT_ROOT / 'save' / 'objects'
-CSV_PATH = PROJECT_ROOT / 'save' / 'results_summary.csv'
+SRC_DIR = PROJECT_ROOT / 'src'
+SAVE_DIR = PROJECT_ROOT / 'save'
+SAVE_OBJECTS = SAVE_DIR / 'objects'
+LOG_DIR = PROJECT_ROOT / 'logs'
+SWEEP_LOG_DIR = LOG_DIR / 'sweep'
 FIG_DIR = PROJECT_ROOT / 'fig'
-SWEEP_LOG_DIR = PROJECT_ROOT / 'logs' / 'sweep'
+RUNS_CSV_PATH = SAVE_DIR / 'results_runs.csv'
+SUMMARY_CSV_PATH = SAVE_DIR / 'results_summary.csv'
+EFFICIENCY_JSON_PATH = SAVE_DIR / 'efficiency_summary.json'
+DEFAULT_LATEX_OUT = SAVE_DIR / 'robustness_section.tex'
 PYTHON = sys.executable
 
-DEFENSES = ['fedavg', 'krum', 'trimmed_mean', 'shieldfl', 'pdfl', 'pritrust_fl']
-DEFENSE_LABELS = {
+SEEDS = [1]
+DATASET_SETTINGS = [
+    ('mnist', 1),
+    ('mnist', 0),
+    ('cifar', 1),
+    ('cifar', 0),
+]
+METHODS = [
+    'fedavg',
+    'krum',
+    'trimmed_mean',
+    'shieldfl',
+    'pdfl',
+    'pritrust_fl',
+]
+EFFICIENCY_METHODS = ['shieldfl', 'pdfl', 'pritrust_fl']
+METHOD_LABELS = {
     'fedavg': 'FedAvg',
     'krum': 'Krum',
     'trimmed_mean': 'Trimmed Mean',
@@ -67,151 +80,417 @@ DEFENSE_LABELS = {
     'pdfl': 'PDFL',
     'pritrust_fl': 'PriTrust-FL',
 }
-SETTINGS = [('mnist', 1), ('mnist', 0), ('cifar', 1), ('cifar', 0)]
-ATTACKS = [
-    ('none', [0.0]),
-    ('sign_flip', [0.1, 0.2, 0.3]),
-    ('min_max', [0.1, 0.2, 0.3]),
-    ('label_flip', [0.1, 0.2, 0.3]),
-    ('backdoor', [0.1, 0.2, 0.3]),
-]
-SEED = 1
-
-# K_t = ceil(0.5 * L); MNIST CNN has L=8, CIFAR ResNet18 has L=102.
+METHOD_ALIASES = {
+    'fedavg': 'fedavg',
+    'fed_avg': 'fedavg',
+    'krum': 'krum',
+    'trimmed_mean': 'trimmed_mean',
+    'trimmedmean': 'trimmed_mean',
+    'shieldfl': 'shieldfl',
+    'shield_fl': 'shieldfl',
+    'pdfl': 'pdfl',
+    'pritrust_fl': 'pritrust_fl',
+    'pritrustfl': 'pritrust_fl',
+}
+ATTACK_RATIOS = {
+    'none': [0.0],
+    'sign_flip': [0.1, 0.2, 0.3],
+    'min_max': [0.1, 0.2, 0.3],
+    'label_flip': [0.1, 0.2, 0.3],
+    'backdoor': [0.1, 0.2, 0.3],
+}
+DEFAULT_EPOCHS = {'mnist': 200, 'cifar': 1000}
+DEFAULT_LOCAL_BS = {'mnist': 10, 'cifar': 32}
+DEFAULT_LR = {'mnist': 0.01, 'cifar': 0.03}
+DEFAULT_WEIGHT_DECAY = {'mnist': 0.0, 'cifar': 5e-4}
+DEFAULT_SCHEDULER = {'mnist': 'none', 'cifar': 'cosine'}
+DEFAULT_MODEL = {'mnist': 'cnn', 'cifar': 'resnet18'}
+DEFAULT_NORM = {'mnist': 'batch_norm', 'cifar': 'batch_norm'}
+# K_t = ceil(0.5 L); MNIST CNN has L=8, CIFAR ResNet18 has L=102.
 PRITRUST_AUDIT_LAYERS = {'mnist': 4, 'cifar': 51}
-PRITRUST_COMMON = [
-    '--pritrust_alpha_min=0.5',
-    '--pritrust_alpha_max=1.5',
-    '--pritrust_theta_tem=1.5',
-    '--pritrust_theta_spa=1.5',
-    '--pritrust_gamma=1.5',
-    '--pritrust_rho=0.8',
-    '--pritrust_kappa=0.5',
-]
-
+DIRICHLET_ALPHA = 0.3
+NUM_USERS = 100
+CLIENT_FRAC = 0.1
+LOCAL_EPOCHS = 1
 NA = 'N/A'
 
+DEFENSE_LINE_PATTERNS = {
+    'fedavg': re.compile(r'(^|&\s*)FedAvg\b'),
+    'krum': re.compile(r'(^|&\s*)Krum\b'),
+    'trimmed_mean': re.compile(r'(^|&\s*)Trimmed Mean\b'),
+    'shieldfl': re.compile(r'(^|&\s*)ShieldFL\b'),
+    'pdfl': re.compile(r'(^|&\s*)PDFL\b'),
+    'pritrust_fl': re.compile(r'\\textbf\{PriTrust-FL\}|(^|&\s*)PriTrust-FL\b'),
+}
+XX_RE = re.compile(r'XX\.XX')
+ROUND_TIME_RE = re.compile(r'Round Time:\s*([0-9]+):([0-9]{2}):([0-9]{2})')
 
-# ---------------------------------------------------------------------
-# Sweep
-# ---------------------------------------------------------------------
-def make_configs(only_dataset=None):
+ROBUSTNESS_LATEX_TEMPLATE = r"""\subsection{Robustness Against Untargeted Attacks}\label{subsec:exp_untargeted}
+
+This subsection evaluates the six methods under the sign-flipping attack and the Min-Max attack. We report clean test accuracy at the final round across malicious client ratios from 0\% to 30\%.
+
+\subsubsection{Clean Performance at Zero Attack Ratio}
+
+
+Table~\ref{tab:clean_baseline} reports the clean test accuracy at malicious ratio 0\% for all six methods on MNIST and CIFAR-10 under both data distributions. The 0\% setting isolates the utility loss caused by each defense in the absence of any adversary. PriTrust-FL preserves accuracy comparable to FedAvg, which confirms that the audit and trust mechanisms do not harm benign training.
+
+\begin{table}[!t]
+\centering
+\caption{Clean test accuracy at malicious ratio 0\%. Higher is better.}
+\label{tab:clean_baseline}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{lcccc}
+\toprule
+\multirow{2}{*}{\textbf{Method}} & \multicolumn{2}{c}{\textbf{MNIST}} & \multicolumn{2}{c}{\textbf{CIFAR-10}} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+ & IID & Non-IID & IID & Non-IID \\
+\midrule
+FedAvg          & XX.XX & XX.XX & XX.XX & XX.XX \\
+Krum            & XX.XX & XX.XX & XX.XX & XX.XX \\
+Trimmed Mean    & XX.XX & XX.XX & XX.XX & XX.XX \\
+ShieldFL        & XX.XX & XX.XX & XX.XX & XX.XX \\
+PDFL            & XX.XX & XX.XX & XX.XX & XX.XX \\
+\textbf{PriTrust-FL} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Sign-Flipping Attack}
+
+Figure~\ref{fig:signflip_sweep} plots clean test accuracy against the malicious client ratio under the sign-flipping attack on both datasets and both data distributions. FedAvg degrades sharply once the attack ratio exceeds 10\%. Krum and Trimmed Mean retain reasonable accuracy at low ratios but lose ground at 30\%. ShieldFL and PDFL provide stable cosine-based defense but show a visible drop in the Non-IID setting. PriTrust-FL achieves the flattest accuracy curve across all four panels, which indicates the strongest robustness to sign-flipping at every evaluated ratio.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{fig/signflip_sweep.pdf}
+\caption{Clean test accuracy versus malicious client ratio under the sign-flipping attack. The four panels correspond to MNIST IID, MNIST Non-IID, CIFAR-10 IID, and CIFAR-10 Non-IID.}
+\label{fig:signflip_sweep}
+\end{figure}
+
+\subsubsection{Min-Max Attack}
+
+Figure~\ref{fig:minmax_sweep} reports the corresponding results under the Min-Max attack. Min-Max is a stronger untargeted attack because it constrains malicious updates to remain within the benign spread. Geometric defenses such as Krum struggle under this attack because the malicious vectors imitate the inter-client norm distribution. ShieldFL and PDFL also lose accuracy as the ratio rises. PriTrust-FL exhibits the smallest accuracy drop across the four panels. The dual-anchor design exposes the malicious deviation in the audited layers even when the overall update norm is bounded.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{fig/minmax_sweep.pdf}
+\caption{Clean test accuracy versus malicious client ratio under the Min-Max attack. The four panels correspond to MNIST IID, MNIST Non-IID, CIFAR-10 IID, and CIFAR-10 Non-IID.}
+\label{fig:minmax_sweep}
+\end{figure}
+
+\subsubsection{Worst-Case Comparison at 30\% Ratio}
+
+Table~\ref{tab:untargeted_30} summarizes the clean test accuracy at the highest evaluated malicious ratio of 30\%. PriTrust-FL achieves the highest accuracy in every column. The advantage is largest under the Min-Max attack and under the Non-IID distribution, which are jointly the most challenging conditions for cosine-based defenses.
+
+\begin{table*}[!t]
+\centering
+\caption{Clean test accuracy at malicious ratio 30\% under untargeted attacks. Higher is better.}
+\label{tab:untargeted_30}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{l cccc cccc}
+\toprule
+\multirow{2}{*}{\textbf{Method}} & \multicolumn{4}{c}{\textbf{MNIST}} & \multicolumn{4}{c}{\textbf{CIFAR-10}} \\
+\cmidrule(lr){2-5} \cmidrule(lr){6-9}
+ & \multicolumn{2}{c}{Sign-flip} & \multicolumn{2}{c}{Min-Max} & \multicolumn{2}{c}{Sign-flip} & \multicolumn{2}{c}{Min-Max} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9}
+ & IID & Non-IID & IID & Non-IID & IID & Non-IID & IID & Non-IID \\
+\midrule
+FedAvg          & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+Krum            & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+Trimmed Mean    & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ShieldFL        & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+PDFL            & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+\textbf{PriTrust-FL} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+% ==================================================================
+\subsection{Robustness Against Targeted Attacks}\label{subsec:exp_targeted}
+
+This subsection evaluates the six methods under the label-flipping attack and the backdoor attack. We report clean test accuracy and attack success rate at the final round across malicious client ratios from 10\% to 30\%.
+
+\subsubsection{Label-Flipping Attack}
+
+Figure~\ref{fig:labelflip_sweep} plots ASR and clean test accuracy against the malicious client ratio under the label-flipping attack. Lower ASR indicates stronger defense. Without defense, ASR rises rapidly as the attack ratio grows. Krum and Trimmed Mean reduce ASR but suffer accuracy loss in the Non-IID setting. ShieldFL and PDFL keep ASR moderate at low ratios but lose containment at 30\%. PriTrust-FL keeps ASR low across all evaluated ratios on both datasets.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{fig/labelflip_sweep.pdf}
+\caption{Attack success rate and clean test accuracy versus malicious client ratio under the label-flipping attack. Solid lines denote ASR. Dashed lines denote clean accuracy.}
+\label{fig:labelflip_sweep}
+\end{figure}
+
+\subsubsection{Backdoor Attack}
+
+Figure~\ref{fig:backdoor_sweep} reports the corresponding results under the backdoor attack. The backdoor attack is harder to detect than label-flipping because the malicious updates are largely aligned with benign updates on non-trigger features. PriTrust-FL substantially outperforms all baselines on backdoor ASR across both data distributions. The stochastic layer auditing combined with the dual-anchor distance test detects backdoor-induced deviations even when the global gradient direction matches the benign trend.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{fig/backdoor_sweep.pdf}
+\caption{Attack success rate and clean test accuracy versus malicious client ratio under the backdoor attack. Solid lines denote ASR. Dashed lines denote clean accuracy.}
+\label{fig:backdoor_sweep}
+\end{figure}
+
+\subsubsection{Worst-Case Comparison at 30\% Ratio}
+
+Table~\ref{tab:targeted_30} summarizes the clean test accuracy and ASR at the highest evaluated malicious ratio of 30\%. PriTrust-FL achieves the lowest ASR and the highest or comparable clean accuracy in all columns. The improvement is most visible on the CIFAR-10 backdoor configuration under Non-IID partitioning.
+
+\begin{table*}[!t]
+\centering
+\caption{Clean test accuracy and attack success rate at malicious ratio 30\% under targeted attacks. Higher Acc is better. Lower ASR is better.}
+\label{tab:targeted_30}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{ll cccc cccc}
+\toprule
+\multirow{2}{*}{\textbf{Dist.}} & \multirow{2}{*}{\textbf{Method}} & \multicolumn{4}{c}{\textbf{MNIST}} & \multicolumn{4}{c}{\textbf{CIFAR-10}} \\
+\cmidrule(lr){3-6} \cmidrule(lr){7-10}
+ & & \multicolumn{2}{c}{Label-flip} & \multicolumn{2}{c}{Backdoor} & \multicolumn{2}{c}{Label-flip} & \multicolumn{2}{c}{Backdoor} \\
+\cmidrule(lr){3-4} \cmidrule(lr){5-6} \cmidrule(lr){7-8} \cmidrule(lr){9-10}
+ & & Acc & ASR & Acc & ASR & Acc & ASR & Acc & ASR \\
+\midrule
+\multirow{6}{*}{IID}
+ & FedAvg          & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & Krum            & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & Trimmed Mean    & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & ShieldFL        & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & PDFL            & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & \textbf{PriTrust-FL} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} \\
+\midrule
+\multirow{6}{*}{Non-IID}
+ & FedAvg          & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & Krum            & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & Trimmed Mean    & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & ShieldFL        & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & PDFL            & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX \\
+ & \textbf{PriTrust-FL} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} & \textbf{XX.XX} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+"""
+
+
+def normalize_method(value):
+    key = str(value).strip().lower().replace('-', '_')
+    if key not in METHOD_ALIASES:
+        choices = ', '.join(METHODS)
+        raise argparse.ArgumentTypeError(
+            'unsupported method "{}"; choose from {}'.format(value, choices))
+    return METHOD_ALIASES[key]
+
+
+def iid_label(iid):
+    return 'IID' if int(iid) == 1 else 'Non-IID'
+
+
+def ratio_key(value):
+    return round(float(value), 4)
+
+
+def float_key(value):
+    return round(float(value), 8)
+
+
+def config_key(cfg):
+    return (
+        str(cfg['dataset']).lower(),
+        int(cfg['iid']),
+        normalize_method(cfg['defense']),
+        str(cfg['attack']).lower(),
+        ratio_key(cfg['malicious_ratio']),
+        int(cfg['seed']),
+        int(cfg['epochs']),
+        int(cfg.get('num_users', NUM_USERS)),
+        float_key(cfg.get('frac', CLIENT_FRAC)),
+        int(cfg.get('local_ep', LOCAL_EPOCHS)),
+        int(cfg.get('local_bs', DEFAULT_LOCAL_BS[str(cfg['dataset']).lower()])),
+        float_key(cfg.get('lr', DEFAULT_LR[str(cfg['dataset']).lower()])),
+        float_key(cfg.get('dirichlet_alpha', DIRICHLET_ALPHA)),
+    )
+
+
+def base_config(dataset, iid, defense, attack, ratio, seed, epochs,
+                test_interval):
+    dataset = dataset.lower()
+    return {
+        'dataset': dataset,
+        'iid': int(iid),
+        'defense': normalize_method(defense),
+        'attack': attack,
+        'malicious_ratio': float(ratio),
+        'seed': int(seed),
+        'epochs': int(epochs),
+        'num_users': NUM_USERS,
+        'frac': CLIENT_FRAC,
+        'local_ep': LOCAL_EPOCHS,
+        'local_bs': DEFAULT_LOCAL_BS[dataset],
+        'lr': DEFAULT_LR[dataset],
+        'momentum': 0.9,
+        'weight_decay': DEFAULT_WEIGHT_DECAY[dataset],
+        'scheduler': DEFAULT_SCHEDULER[dataset],
+        'model': DEFAULT_MODEL[dataset],
+        'norm': DEFAULT_NORM[dataset],
+        'optimizer': 'sgd',
+        'dirichlet_alpha': DIRICHLET_ALPHA,
+        'test_interval': int(test_interval),
+    }
+
+
+def make_main_configs(seeds, methods, only_dataset, attacks, test_interval):
     configs = []
-    for dataset, iid in SETTINGS:
+    selected_attacks = attacks or list(ATTACK_RATIOS.keys())
+    for dataset, iid in DATASET_SETTINGS:
         if only_dataset and dataset != only_dataset:
             continue
-        for defense in DEFENSES:
-            for attack, ratios in ATTACKS:
-                for ratio in ratios:
-                    configs.append({
-                        'dataset': dataset,
-                        'iid': iid,
-                        'defense': defense,
-                        'attack': attack,
-                        'malicious_ratio': ratio,
-                        'seed': SEED,
-                    })
+        for method in methods:
+            for attack in selected_attacks:
+                for ratio in ATTACK_RATIOS[attack]:
+                    for seed in seeds:
+                        configs.append(base_config(
+                            dataset, iid, method, attack, ratio, seed,
+                            DEFAULT_EPOCHS[dataset], test_interval))
     return configs
 
 
-def config_key(args_or_cfg):
-    return (
-        args_or_cfg['dataset'],
-        int(args_or_cfg['iid']),
-        args_or_cfg['defense'],
-        args_or_cfg['attack'],
-        round(float(args_or_cfg['malicious_ratio']), 4),
-        int(args_or_cfg['seed']),
-    )
+def make_efficiency_configs(seeds, methods, iid, rounds, test_interval):
+    configs = []
+    for method in methods:
+        for seed in seeds:
+            configs.append(base_config(
+                'cifar', iid, method, 'none', 0.0, seed, rounds,
+                test_interval))
+    return configs
 
 
 def build_command(cfg, gpu_id=None):
     cmd = [
-        PYTHON, str(PROJECT_ROOT / 'src' / 'federated_main.py'),
+        PYTHON,
+        str(SRC_DIR / 'federated_main.py'),
         f'--dataset={cfg["dataset"]}',
+        f'--model={cfg["model"]}',
         f'--iid={cfg["iid"]}',
+        f'--dirichlet_alpha={cfg["dirichlet_alpha"]}',
+        f'--epochs={cfg["epochs"]}',
+        f'--num_users={cfg["num_users"]}',
+        f'--frac={cfg["frac"]}',
+        f'--local_ep={cfg["local_ep"]}',
+        f'--local_bs={cfg["local_bs"]}',
+        f'--optimizer={cfg["optimizer"]}',
+        f'--lr={cfg["lr"]}',
+        f'--momentum={cfg["momentum"]}',
+        f'--weight_decay={cfg["weight_decay"]}',
+        f'--scheduler={cfg["scheduler"]}',
+        f'--norm={cfg["norm"]}',
+        f'--test_interval={cfg["test_interval"]}',
         f'--defense={cfg["defense"]}',
         f'--attack={cfg["attack"]}',
         f'--malicious_ratio={cfg["malicious_ratio"]}',
+        '--sign_flip_lambda=5',
+        '--min_max_search_steps=30',
+        '--label_flip_source=1',
+        '--attack_target_label=7',
+        '--backdoor_fraction=0.2',
         f'--seed={cfg["seed"]}',
+        f'--pritrust_audit_layers={PRITRUST_AUDIT_LAYERS[cfg["dataset"]]}',
+        '--pritrust_alpha_min=0.5',
+        '--pritrust_alpha_max=1.5',
+        '--pritrust_theta_tem=1.5',
+        '--pritrust_theta_spa=1.5',
+        '--pritrust_gamma=1.5',
+        '--pritrust_rho=0.8',
+        '--pritrust_kappa=0.5',
     ]
-    if cfg['defense'] == 'pritrust_fl':
-        cmd.append(
-            f'--pritrust_audit_layers={PRITRUST_AUDIT_LAYERS[cfg["dataset"]]}')
-        cmd.extend(PRITRUST_COMMON)
     if gpu_id is not None:
         cmd.append(f'--gpu={gpu_id}')
     return cmd
 
 
-def scan_completed():
-    completed = {}
-    if not SAVE_OBJECTS.exists():
-        return completed
-    for pkl_path in SAVE_OBJECTS.glob('*.pkl'):
-        record = _load_pkl(pkl_path)
-        if record is None:
-            continue
-        key = config_key(record['args'])
-        existing = completed.get(key)
-        if existing is None or record['mtime'] > existing['mtime']:
-            completed[key] = record
-    return completed
+def command_text(cmd):
+    return ' '.join(str(part) for part in cmd)
 
 
-def _load_pkl(pkl_path):
+def load_pkl(pkl_path):
     try:
-        with open(pkl_path, 'rb') as f:
-            data = pickle.load(f)
+        with open(pkl_path, 'rb') as handle:
+            data = pickle.load(handle)
     except Exception:
         return None
     if not isinstance(data, dict):
         return None
+
     args = data.get('args')
     accuracy = data.get('mta_accuracy') or data.get('test_accuracy')
     asr = data.get('attack_success_rates') or data.get('asr')
-    if not args or not accuracy:
+    if not isinstance(args, dict) or not accuracy:
         return None
+
     try:
-        _ = (args['dataset'], int(args['iid']), args['defense'],
-             args['attack'], float(args['malicious_ratio']), int(args['seed']))
-    except (KeyError, TypeError, ValueError):
+        cfg = {
+            'dataset': args['dataset'],
+            'iid': int(args['iid']),
+            'defense': normalize_method(args['defense']),
+            'attack': args['attack'],
+            'malicious_ratio': float(args['malicious_ratio']),
+            'seed': int(args['seed']),
+            'epochs': int(args['epochs']),
+            'num_users': int(args.get('num_users', NUM_USERS)),
+            'frac': float(args.get('frac', CLIENT_FRAC)),
+            'local_ep': int(args.get('local_ep', LOCAL_EPOCHS)),
+            'local_bs': int(args.get(
+                'local_bs',
+                DEFAULT_LOCAL_BS[str(args['dataset']).lower()])),
+            'lr': float(args.get(
+                'lr',
+                DEFAULT_LR[str(args['dataset']).lower()])),
+            'dirichlet_alpha': float(args.get(
+                'dirichlet_alpha', DIRICHLET_ALPHA)),
+        }
+    except (KeyError, TypeError, ValueError, argparse.ArgumentTypeError):
         return None
+
+    final_asr = None
+    if asr and asr[-1] is not None:
+        final_asr = float(asr[-1])
+
+    stem = pkl_path.stem
+    final_log = LOG_DIR / f'{stem}.log'
+    temp_log = LOG_DIR / f'tmp_{stem}.log'
+    log_path = final_log if final_log.exists() else temp_log
+
     return {
         'args': args,
+        'cfg': cfg,
+        'key': config_key(cfg),
         'final_mta': float(accuracy[-1]),
-        'final_asr': (None if not asr or asr[-1] is None
-                      else float(asr[-1])),
+        'final_asr': final_asr,
         'pkl': pkl_path,
+        'log': log_path if log_path.exists() else None,
         'mtime': pkl_path.stat().st_mtime,
     }
 
 
-def _gpu_worker(gpu_id, job_queue, log_dir):
-    log_dir.mkdir(parents=True, exist_ok=True)
-    while True:
-        try:
-            idx, total, cfg = job_queue.get_nowait()
-        except queue.Empty:
-            return
-        cmd = build_command(cfg, gpu_id=gpu_id)
-        tag = (f'{cfg["dataset"]}_iid{cfg["iid"]}_{cfg["defense"]}_'
-               f'{cfg["attack"]}_mr{cfg["malicious_ratio"]}_s{cfg["seed"]}')
-        log_path = log_dir / f'{tag}.gpu{gpu_id}.log'
-        start = time.time()
-        print(f'[gpu{gpu_id}] [{idx:3d}/{total}] start: {tag}', flush=True)
-        with open(log_path, 'w') as out:
-            proc = subprocess.run(cmd, stdout=out, stderr=subprocess.STDOUT)
-        elapsed = time.time() - start
-        status = 'OK ' if proc.returncode == 0 else f'FAIL({proc.returncode})'
-        print(f'[gpu{gpu_id}] [{idx:3d}/{total}] {status} {elapsed:6.1f}s : '
-              f'{tag}', flush=True)
+def load_runs():
+    runs = {}
+    if not SAVE_OBJECTS.exists():
+        return runs
+    for pkl_path in sorted(SAVE_OBJECTS.glob('*.pkl')):
+        record = load_pkl(pkl_path)
+        if record is None:
+            continue
+        existing = runs.get(record['key'])
+        if existing is None or record['mtime'] > existing['mtime']:
+            runs[record['key']] = record
+    return runs
 
 
-def run_sweep(gpus, only_dataset=None, dry_run=False, list_pending=False):
-    configs = make_configs(only_dataset=only_dataset)
-    completed = scan_completed()
-    pending = [c for c in configs if config_key(c) not in completed]
+def pending_configs(configs, runs):
+    return [cfg for cfg in configs if config_key(cfg) not in runs]
+
+
+def dispatch_configs(configs, gpus, tasks_per_gpu=1, dry_run=False,
+                     list_pending=False):
+    runs = load_runs()
+    pending = pending_configs(configs, runs)
 
     print(f'Total configs:    {len(configs)}')
     print(f'Already complete: {len(configs) - len(pending)}')
@@ -220,152 +499,272 @@ def run_sweep(gpus, only_dataset=None, dry_run=False, list_pending=False):
 
     if dry_run or list_pending:
         for cfg in pending:
-            print(' '.join(build_command(cfg)))
+            print(command_text(build_command(cfg)))
         return
 
     if not pending:
-        print('All configs already complete; nothing to dispatch.')
+        print('All requested configs are already complete.')
         return
 
     job_queue = mp.Queue()
     for idx, cfg in enumerate(pending, start=1):
         job_queue.put((idx, len(pending), cfg))
 
-    workers = [
-        mp.Process(target=_gpu_worker, args=(gpu, job_queue, SWEEP_LOG_DIR))
+    worker_slots = [
+        (gpu, slot)
         for gpu in gpus
+        for slot in range(max(1, int(tasks_per_gpu)))
     ]
-    for w in workers:
-        w.start()
-    for w in workers:
-        w.join()
+    workers = [
+        mp.Process(
+            target=gpu_worker,
+            args=(gpu, slot, job_queue, SWEEP_LOG_DIR),
+        )
+        for gpu, slot in worker_slots
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
 
 
-# ---------------------------------------------------------------------
-# Aggregation
-# ---------------------------------------------------------------------
-def load_runs():
-    runs = {}
-    if not SAVE_OBJECTS.exists():
-        return runs
-    for pkl_path in sorted(SAVE_OBJECTS.glob('*.pkl')):
-        record = _load_pkl(pkl_path)
+def gpu_worker(gpu_id, worker_slot, job_queue, log_dir):
+    log_dir.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            idx, total, cfg = job_queue.get_nowait()
+        except queue.Empty:
+            return
+
+        tag = (
+            f'{cfg["dataset"]}_iid{cfg["iid"]}_{cfg["defense"]}_'
+            f'{cfg["attack"]}_mr{cfg["malicious_ratio"]}_'
+            f'ep{cfg["epochs"]}_s{cfg["seed"]}'
+        )
+        log_path = log_dir / f'{tag}.gpu{gpu_id}.slot{worker_slot}.log'
+        cmd = build_command(cfg, gpu_id=gpu_id)
+        start = time.time()
+        worker_name = f'gpu{gpu_id}:{worker_slot}'
+        print(f'[{worker_name}] [{idx:4d}/{total}] start {tag}', flush=True)
+        with open(log_path, 'w') as output:
+            proc = subprocess.run(cmd, stdout=output, stderr=subprocess.STDOUT)
+        elapsed = time.time() - start
+        status = 'OK' if proc.returncode == 0 else f'FAIL({proc.returncode})'
+        print(
+            f'[{worker_name}] [{idx:4d}/{total}] {status} '
+            f'{elapsed:8.1f}s {tag}',
+            flush=True,
+        )
+
+
+def metric_values(runs, cfg_template, metric, seeds, allow_partial=False):
+    values = []
+    missing = []
+    for seed in seeds:
+        cfg = dict(cfg_template, seed=int(seed))
+        record = runs.get(config_key(cfg))
+        if record is None and cfg['attack'] != 'none' and abs(
+                cfg['malicious_ratio']) < 1e-9:
+            fallback = dict(cfg, attack='none', malicious_ratio=0.0)
+            record = runs.get(config_key(fallback))
         if record is None:
+            missing.append(seed)
             continue
-        key = config_key(record['args'])
-        existing = runs.get(key)
-        if existing is None or record['mtime'] > existing['mtime']:
-            runs[key] = record
-    return runs
+        value = record['final_mta'] if metric == 'mta' else record['final_asr']
+        if value is None:
+            missing.append(seed)
+            continue
+        values.append(float(value))
+
+    if missing and not allow_partial:
+        return None, len(values), missing
+    if not values:
+        return None, 0, missing
+    return statistics.mean(values), len(values), missing
 
 
-def lookup(runs, dataset, iid, defense, attack, ratio, metric='mta'):
-    """Return formatted percentage string, or NA when missing."""
-    key = (dataset, int(iid), defense, attack, round(float(ratio), 4), SEED)
-    record = runs.get(key)
-    if record is None:
-        # 0% point can come from attack=none.
-        if abs(ratio) < 1e-9:
-            key = (dataset, int(iid), defense, 'none', 0.0, SEED)
-            record = runs.get(key)
-    if record is None:
-        return NA
-    value = record['final_mta'] if metric == 'mta' else record['final_asr']
+def lookup_percent(runs, dataset, iid, defense, attack, ratio, metric, seeds,
+                   allow_partial=False):
+    cfg = base_config(
+        dataset, iid, defense, attack, ratio, seeds[0],
+        DEFAULT_EPOCHS[dataset], test_interval=0)
+    value, _, _ = metric_values(
+        runs, cfg, metric, seeds, allow_partial=allow_partial)
     if value is None:
         return NA
-    return '{:.2f}'.format(100 * value)
+    return f'{100.0 * value:.2f}'
 
 
-def write_csv(runs, csv_path=CSV_PATH):
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ['dataset', 'iid', 'defense', 'attack',
-                  'malicious_ratio', 'seed', 'final_mta', 'final_asr']
-    with open(csv_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for key in sorted(runs):
-            r = runs[key]
-            writer.writerow({
-                'dataset': r['args']['dataset'],
-                'iid': int(r['args']['iid']),
-                'defense': r['args']['defense'],
-                'attack': r['args']['attack'],
-                'malicious_ratio': float(r['args']['malicious_ratio']),
-                'seed': int(r['args']['seed']),
-                'final_mta': r['final_mta'],
-                'final_asr': r['final_asr'],
-            })
-    print(f'wrote {csv_path}  ({len(runs)} rows)')
+def mean_std(values):
+    if not values:
+        return None, None
+    if len(values) == 1:
+        return statistics.mean(values), 0.0
+    return statistics.mean(values), statistics.stdev(values)
 
 
-def report_missing(runs):
-    expected = make_configs()
-    expected_keys = {config_key(c) for c in expected}
-    present = expected_keys & set(runs.keys())
-    missing = sorted(expected_keys - set(runs.keys()))
-    print(f'expected configs: {len(expected_keys)}')
-    print(f'present:          {len(present)}')
-    print(f'missing:          {len(missing)}')
-    if missing:
-        print('first 10 missing:')
-        for k in missing[:10]:
-            print(' ', k)
+def report_missing(title, configs, runs):
+    missing = pending_configs(configs, runs)
+    print(title)
+    print(f'  expected: {len(configs)}')
+    print(f'  present:  {len(configs) - len(missing)}')
+    print(f'  missing:  {len(missing)}')
+    for cfg in missing[:10]:
+        print(
+            '   - '
+            f'{cfg["dataset"]} {iid_label(cfg["iid"])} '
+            f'{cfg["defense"]} {cfg["attack"]} '
+            f'mr={cfg["malicious_ratio"]} ep={cfg["epochs"]} '
+            f'seed={cfg["seed"]}'
+        )
+    if len(missing) > 10:
+        print(f'   ... {len(missing) - 10} more')
     print()
 
 
-def _row_label(defense):
-    return ('\\textbf{PriTrust-FL}' if defense == 'pritrust_fl'
-            else DEFENSE_LABELS[defense])
+def row_label(method):
+    if method == 'pritrust_fl':
+        return r'\textbf{PriTrust-FL}'
+    return METHOD_LABELS[method]
 
 
-def print_table_clean(runs):
-    print('% Table 1 (clean_baseline) - clean MTA at malicious_ratio = 0')
-    for defense in DEFENSES:
+def print_latex_rows(runs, seeds, allow_partial=False):
+    print('% Table clean_baseline - clean MTA at malicious_ratio = 0')
+    for method in METHODS:
         cells = []
         for dataset in ['mnist', 'cifar']:
             for iid in [1, 0]:
-                cells.append(lookup(
-                    runs, dataset, iid, defense, 'none', 0.0))
-        line = ' & '.join([_row_label(defense)] + cells) + ' \\\\'
-        print(line)
+                cells.append(lookup_percent(
+                    runs, dataset, iid, method, 'none', 0.0, 'mta',
+                    seeds, allow_partial))
+        print(' & '.join([row_label(method)] + cells) + r' \\')
     print()
 
-
-def print_table_untargeted_30(runs):
-    print('% Table 2 (untargeted_30) - clean MTA at malicious_ratio = 0.3')
-    for defense in DEFENSES:
+    print('% Table untargeted_30 - clean MTA at malicious_ratio = 30%')
+    for method in METHODS:
         cells = []
         for dataset in ['mnist', 'cifar']:
             for attack in ['sign_flip', 'min_max']:
                 for iid in [1, 0]:
-                    cells.append(lookup(
-                        runs, dataset, iid, defense, attack, 0.3))
-        line = ' & '.join([_row_label(defense)] + cells) + ' \\\\'
-        print(line)
+                    cells.append(lookup_percent(
+                        runs, dataset, iid, method, attack, 0.3, 'mta',
+                        seeds, allow_partial))
+        print(' & '.join([row_label(method)] + cells) + r' \\')
     print()
 
-
-def print_table_targeted_30(runs):
-    print('% Table 3 (targeted_30) - MTA + ASR at malicious_ratio = 0.3')
-    for iid_label, iid in [('IID', 1), ('Non-IID', 0)]:
-        print(f'% --- {iid_label} block ---')
-        for defense in DEFENSES:
+    print('% Table targeted_30 - MTA + ASR at malicious_ratio = 30%')
+    for iid_name, iid in [('IID', 1), ('Non-IID', 0)]:
+        print(f'% --- {iid_name} block ---')
+        for method in METHODS:
             cells = []
             for dataset in ['mnist', 'cifar']:
                 for attack in ['label_flip', 'backdoor']:
-                    cells.append(lookup(
-                        runs, dataset, iid, defense, attack, 0.3, 'mta'))
-                    cells.append(lookup(
-                        runs, dataset, iid, defense, attack, 0.3, 'asr'))
-            line = ' & '.join([_row_label(defense)] + cells) + ' \\\\'
-            print(line)
+                    cells.append(lookup_percent(
+                        runs, dataset, iid, method, attack, 0.3, 'mta',
+                        seeds, allow_partial))
+                    cells.append(lookup_percent(
+                        runs, dataset, iid, method, attack, 0.3, 'asr',
+                        seeds, allow_partial))
+            print(' & '.join([row_label(method)] + cells) + r' \\')
         print()
 
 
-# ---------------------------------------------------------------------
-# Plots
-# ---------------------------------------------------------------------
-def _plot_panels(runs, attack, ratios, metric, out_path):
+def write_csvs(runs, seeds, allow_partial=False):
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(RUNS_CSV_PATH, 'w', newline='') as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                'dataset', 'iid', 'defense', 'attack', 'malicious_ratio',
+                'seed', 'epochs', 'final_mta', 'final_asr', 'pkl',
+            ],
+        )
+        writer.writeheader()
+        for key in sorted(runs):
+            record = runs[key]
+            cfg = record['cfg']
+            writer.writerow({
+                'dataset': cfg['dataset'],
+                'iid': cfg['iid'],
+                'defense': cfg['defense'],
+                'attack': cfg['attack'],
+                'malicious_ratio': cfg['malicious_ratio'],
+                'seed': cfg['seed'],
+                'epochs': cfg['epochs'],
+                'final_mta': record['final_mta'],
+                'final_asr': record['final_asr'],
+                'pkl': record['pkl'],
+            })
+
+    with open(SUMMARY_CSV_PATH, 'w', newline='') as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                'dataset', 'iid', 'defense', 'attack', 'malicious_ratio',
+                'epochs', 'metric', 'mean', 'std', 'seeds_present',
+                'seeds_expected', 'missing_seeds',
+            ],
+        )
+        writer.writeheader()
+        templates = []
+        for dataset, iid in DATASET_SETTINGS:
+            for method in METHODS:
+                for attack, ratios in ATTACK_RATIOS.items():
+                    for ratio in ratios:
+                        templates.append(base_config(
+                            dataset, iid, method, attack, ratio, seeds[0],
+                            DEFAULT_EPOCHS[dataset], test_interval=0))
+        for cfg in templates:
+            for metric in ['mta', 'asr']:
+                values = []
+                missing = []
+                for seed in seeds:
+                    seeded = dict(cfg, seed=seed)
+                    record = runs.get(config_key(seeded))
+                    if record is None and cfg['attack'] != 'none' and abs(
+                            cfg['malicious_ratio']) < 1e-9:
+                        fallback = dict(seeded, attack='none',
+                                        malicious_ratio=0.0)
+                        record = runs.get(config_key(fallback))
+                    if record is None:
+                        missing.append(seed)
+                        continue
+                    value = (record['final_mta'] if metric == 'mta'
+                             else record['final_asr'])
+                    if value is None:
+                        if metric == 'asr':
+                            continue
+                        missing.append(seed)
+                        continue
+                    values.append(float(value))
+                if metric == 'asr' and cfg['attack'] not in (
+                        'label_flip', 'backdoor'):
+                    continue
+                if missing and not allow_partial:
+                    mean_value, std_value = None, None
+                else:
+                    mean_value, std_value = mean_std(values)
+                writer.writerow({
+                    'dataset': cfg['dataset'],
+                    'iid': cfg['iid'],
+                    'defense': cfg['defense'],
+                    'attack': cfg['attack'],
+                    'malicious_ratio': cfg['malicious_ratio'],
+                    'epochs': cfg['epochs'],
+                    'metric': metric,
+                    'mean': '' if mean_value is None else mean_value,
+                    'std': '' if std_value is None else std_value,
+                    'seeds_present': len(values),
+                    'seeds_expected': len(seeds),
+                    'missing_seeds': ' '.join(str(seed) for seed in missing),
+                })
+
+    print(f'wrote {RUNS_CSV_PATH}')
+    print(f'wrote {SUMMARY_CSV_PATH}')
+
+
+def plot_panels(runs, attack, ratios, metric, out_path, seeds,
+                allow_partial=False):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -377,236 +776,523 @@ def _plot_panels(runs, attack, ratios, metric, out_path):
         ('cifar', 0, 'CIFAR-10 Non-IID'),
     ]
     styles = {
-        'fedavg':       ('#888888', 'o'),
-        'krum':         ('#1f77b4', 's'),
-        'trimmed_mean': ('#2ca02c', '^'),
-        'shieldfl':     ('#ff7f0e', 'D'),
-        'pdfl':         ('#9467bd', 'v'),
-        'pritrust_fl':  ('#d62728', '*'),
+        'fedavg': ('#6b7280', 'o'),
+        'krum': ('#2563eb', 's'),
+        'trimmed_mean': ('#059669', '^'),
+        'shieldfl': ('#d97706', 'D'),
+        'pdfl': ('#7c3aed', 'v'),
+        'pritrust_fl': ('#dc2626', '*'),
     }
-    fig, axes = plt.subplots(2, 2, figsize=(8, 6), sharex=True)
-    secondary = (metric == 'asr_with_mta')
+
+    fig, axes = plt.subplots(2, 2, figsize=(8.2, 6.0), sharex=True)
+    secondary = metric == 'asr_with_mta'
+
     for ax, (dataset, iid, title) in zip(axes.flat, panels):
         ax2 = ax.twinx() if secondary else None
-        for defense in DEFENSES:
-            color, marker = styles[defense]
-            xs_a, ys_a, xs_b, ys_b = [], [], [], []
+        for method in METHODS:
+            color, marker = styles[method]
+            xs_primary, ys_primary = [], []
+            xs_secondary, ys_secondary = [], []
             for ratio in ratios:
                 if metric == 'mta':
-                    cell = lookup(runs, dataset, iid, defense, attack,
-                                  ratio, 'mta')
-                    if cell != NA:
-                        xs_a.append(100 * ratio)
-                        ys_a.append(float(cell))
+                    value = lookup_percent(
+                        runs, dataset, iid, method, attack, ratio, 'mta',
+                        seeds, allow_partial)
+                    if value != NA:
+                        xs_primary.append(100 * ratio)
+                        ys_primary.append(float(value))
                 else:
-                    asr_cell = lookup(runs, dataset, iid, defense, attack,
-                                      ratio, 'asr')
-                    mta_cell = lookup(runs, dataset, iid, defense, attack,
-                                      ratio, 'mta')
-                    if asr_cell != NA:
-                        xs_a.append(100 * ratio)
-                        ys_a.append(float(asr_cell))
-                    if mta_cell != NA:
-                        xs_b.append(100 * ratio)
-                        ys_b.append(float(mta_cell))
-            if xs_a:
-                ax.plot(xs_a, ys_a, color=color, marker=marker,
-                        label=DEFENSE_LABELS[defense],
-                        linewidth=1.5, markersize=5)
-            if secondary and xs_b:
-                ax2.plot(xs_b, ys_b, color=color, marker=marker,
-                         linestyle='--', linewidth=1.0, markersize=4,
-                         alpha=0.7)
+                    asr = lookup_percent(
+                        runs, dataset, iid, method, attack, ratio, 'asr',
+                        seeds, allow_partial)
+                    mta = lookup_percent(
+                        runs, dataset, iid, method, attack, ratio, 'mta',
+                        seeds, allow_partial)
+                    if asr != NA:
+                        xs_primary.append(100 * ratio)
+                        ys_primary.append(float(asr))
+                    if mta != NA:
+                        xs_secondary.append(100 * ratio)
+                        ys_secondary.append(float(mta))
+            if xs_primary:
+                ax.plot(
+                    xs_primary, ys_primary, color=color, marker=marker,
+                    label=METHOD_LABELS[method], linewidth=1.6,
+                    markersize=5,
+                )
+            if secondary and xs_secondary:
+                ax2.plot(
+                    xs_secondary, ys_secondary, color=color, marker=marker,
+                    linestyle='--', linewidth=1.1, markersize=4,
+                    alpha=0.78,
+                )
         ax.set_title(title)
-        ax.grid(True, alpha=0.3)
         ax.set_xlabel('Malicious client ratio (%)')
+        ax.grid(True, alpha=0.28)
         if metric == 'mta':
-            ax.set_ylabel('MTA Acc (%)')
+            ax.set_ylabel('Clean accuracy (%)')
         else:
             ax.set_ylabel('ASR (%)')
-            ax2.set_ylabel('MTA Acc (%)')
+            ax2.set_ylabel('Clean accuracy (%)')
+
     handles, labels = axes[0, 0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc='lower center', ncol=6,
-                   frameon=False, bbox_to_anchor=(0.5, -0.02))
-    plt.tight_layout(rect=[0, 0.04, 1, 1])
+        fig.legend(
+            handles, labels, loc='lower center', ncol=6, frameon=False,
+            bbox_to_anchor=(0.5, -0.02),
+        )
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, bbox_inches='tight')
-    plt.close()
+    fig.savefig(out_path, bbox_inches='tight')
+    plt.close(fig)
     print(f'wrote {out_path}')
 
 
-def make_plots(runs):
-    _plot_panels(runs, 'sign_flip', [0.0, 0.1, 0.2, 0.3], 'mta',
-                 FIG_DIR / 'signflip_sweep.pdf')
-    _plot_panels(runs, 'min_max', [0.0, 0.1, 0.2, 0.3], 'mta',
-                 FIG_DIR / 'minmax_sweep.pdf')
-    _plot_panels(runs, 'label_flip', [0.1, 0.2, 0.3], 'asr_with_mta',
-                 FIG_DIR / 'labelflip_sweep.pdf')
-    _plot_panels(runs, 'backdoor', [0.1, 0.2, 0.3], 'asr_with_mta',
-                 FIG_DIR / 'backdoor_sweep.pdf')
+def make_plots(runs, seeds, allow_partial=False):
+    plot_panels(
+        runs, 'sign_flip', [0.0, 0.1, 0.2, 0.3], 'mta',
+        FIG_DIR / 'signflip_sweep.pdf', seeds, allow_partial)
+    plot_panels(
+        runs, 'min_max', [0.0, 0.1, 0.2, 0.3], 'mta',
+        FIG_DIR / 'minmax_sweep.pdf', seeds, allow_partial)
+    plot_panels(
+        runs, 'label_flip', [0.1, 0.2, 0.3], 'asr_with_mta',
+        FIG_DIR / 'labelflip_sweep.pdf', seeds, allow_partial)
+    plot_panels(
+        runs, 'backdoor', [0.1, 0.2, 0.3], 'asr_with_mta',
+        FIG_DIR / 'backdoor_sweep.pdf', seeds, allow_partial)
 
 
-# ---------------------------------------------------------------------
-# LaTeX placeholder filling
-# ---------------------------------------------------------------------
-DEFENSE_LINE_PATTERNS = {
-    'fedavg':       re.compile(r'(^|&\s*)FedAvg\b'),
-    'krum':         re.compile(r'(^|&\s*)Krum\b'),
-    'trimmed_mean': re.compile(r'(^|&\s*)Trimmed Mean\b'),
-    'shieldfl':     re.compile(r'(^|&\s*)ShieldFL\b'),
-    'pdfl':         re.compile(r'(^|&\s*)PDFL\b'),
-    'pritrust_fl':  re.compile(r'\\textbf\{PriTrust-FL\}'),
-}
-XX_RE = re.compile(r'XX\.XX')
+def get_cifar_float_state_elements():
+    sys.path.insert(0, str(SRC_DIR))
+    from types import SimpleNamespace
+    from models import ResNet18Cifar
+
+    model = ResNet18Cifar(SimpleNamespace(norm='batch_norm'))
+    return sum(
+        tensor.numel()
+        for tensor in model.state_dict().values()
+        if tensor.is_floating_point()
+    )
 
 
-def _replace_xx_sequence(line, values):
+def upload_size_mb(args):
+    try:
+        value_count = get_cifar_float_state_elements()
+    except Exception as exc:
+        print(f'warning: could not compute model size for upload table: {exc}')
+        return {method: None for method in EFFICIENCY_METHODS}
+
+    paillier_bytes = math.ceil((2 * args.paillier_bits) / 8)
+    share_bytes = math.ceil(args.share_bits / 8)
+    sizes = {
+        'shieldfl': value_count * paillier_bytes,
+        'pdfl': value_count * args.share_count * share_bytes,
+        'pritrust_fl': (
+            value_count * args.share_count * share_bytes +
+            args.pritrust_header_bytes
+        ),
+    }
+    return {
+        method: byte_count / (1024.0 * 1024.0)
+        for method, byte_count in sizes.items()
+    }
+
+
+def benchmark_audit_times(args):
+    if args.skip_audit_benchmark:
+        return {method: None for method in EFFICIENCY_METHODS}
+
+    cache = read_efficiency_cache()
+    cache_key = {
+        'audit_benchmark_rounds': args.audit_benchmark_rounds,
+        'audit_benchmark_clients': args.audit_benchmark_clients,
+        'share_bits': args.share_bits,
+        'share_count': args.share_count,
+        'paillier_bits': args.paillier_bits,
+    }
+    if (not args.refresh_efficiency and
+            cache.get('cache_key') == cache_key and
+            'audit_time_s' in cache):
+        return {
+            method: cache['audit_time_s'].get(method)
+            for method in EFFICIENCY_METHODS
+        }
+
+    try:
+        sys.path.insert(0, str(SRC_DIR))
+        import torch
+        from types import SimpleNamespace
+        from models import ResNet18Cifar
+        from defenses import aggregate_weights
+    except Exception as exc:
+        print(f'warning: could not run audit benchmark: {exc}')
+        return {method: None for method in EFFICIENCY_METHODS}
+
+    torch.manual_seed(1234)
+    model = ResNet18Cifar(SimpleNamespace(norm='batch_norm'))
+    global_weights = model.state_dict()
+    clients = int(args.audit_benchmark_clients)
+    local_weights = []
+    for client_idx in range(clients):
+        client_state = {}
+        scale = 1e-4 * float(client_idx + 1)
+        for key, value in global_weights.items():
+            if value.is_floating_point():
+                noise = torch.randn_like(value, dtype=torch.float32) * scale
+                client_state[key] = value.detach().clone() + noise.to(
+                    dtype=value.dtype)
+            else:
+                client_state[key] = value.detach().clone()
+        local_weights.append(client_state)
+
+    sample_counts = [500 for _ in range(clients)]
+    client_ids = list(range(clients))
+    audit_times = {}
+    for method in EFFICIENCY_METHODS:
+        bench_args = SimpleNamespace(
+            defense=method,
+            malicious_ratio=0.0,
+            attack='none',
+            defense_byzantine_clients=None,
+            trimmed_mean_trim_ratio=None,
+            shieldfl_similarity_threshold=0.0,
+            pdfl_similarity_threshold=0.0,
+            pritrust_audit_layers=None,
+            pritrust_alpha_min=0.5,
+            pritrust_alpha_max=1.5,
+            pritrust_theta_tem=1.5,
+            pritrust_theta_spa=1.5,
+            pritrust_gamma=1.5,
+            pritrust_rho=0.8,
+            pritrust_kappa=0.5,
+            pritrust_security_bits=128,
+            seed=1,
+        )
+        state = {}
+        timings = []
+        for round_idx in range(args.audit_benchmark_rounds + 2):
+            start = time.perf_counter()
+            aggregate_weights(
+                bench_args, global_weights, local_weights, sample_counts,
+                client_ids=client_ids, state=state)
+            elapsed = time.perf_counter() - start
+            if round_idx >= 2:
+                timings.append(elapsed)
+        audit_times[method] = statistics.mean(timings) if timings else None
+        print(f'audit benchmark {method}: {audit_times[method]:.4f}s')
+
+    cache['cache_key'] = cache_key
+    cache['audit_time_s'] = audit_times
+    write_efficiency_cache(cache)
+    return audit_times
+
+
+def read_efficiency_cache():
+    if not EFFICIENCY_JSON_PATH.exists():
+        return {}
+    try:
+        return json.loads(EFFICIENCY_JSON_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def write_efficiency_cache(cache):
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    EFFICIENCY_JSON_PATH.write_text(json.dumps(cache, indent=2, sort_keys=True))
+    print(f'wrote {EFFICIENCY_JSON_PATH}')
+
+
+def parse_round_times(log_path, limit):
+    if log_path is None or not Path(log_path).exists():
+        return []
+    times = []
+    with open(log_path, 'r', encoding='utf-8', errors='replace') as handle:
+        for line in handle:
+            match = ROUND_TIME_RE.search(line)
+            if not match:
+                continue
+            hours, minutes, seconds = (int(match.group(1)),
+                                       int(match.group(2)),
+                                       int(match.group(3)))
+            times.append(hours * 3600 + minutes * 60 + seconds)
+            if len(times) >= limit:
+                break
+    return times
+
+
+def e2e_round_times(runs, args):
+    result = {}
+    for method in EFFICIENCY_METHODS:
+        per_seed = []
+        for seed in args.seeds:
+            preferred = base_config(
+                'cifar', args.efficiency_iid, method, 'none', 0.0, seed,
+                args.efficiency_rounds, test_interval=0)
+            record = runs.get(config_key(preferred))
+            if record is None:
+                fallback = base_config(
+                    'cifar', args.efficiency_iid, method, 'none', 0.0, seed,
+                    DEFAULT_EPOCHS['cifar'], test_interval=0)
+                record = runs.get(config_key(fallback))
+            if record is None:
+                continue
+            round_times = parse_round_times(record['log'], args.efficiency_rounds)
+            if round_times:
+                per_seed.append(statistics.mean(round_times))
+        result[method] = statistics.mean(per_seed) if per_seed else None
+    return result
+
+
+def collect_efficiency_metrics(runs, args):
+    metrics = {
+        'upload_size_mb': upload_size_mb(args),
+        'audit_time_s': benchmark_audit_times(args),
+        'e2e_time_s': e2e_round_times(runs, args),
+    }
+    cache = read_efficiency_cache()
+    cache.update(metrics)
+    write_efficiency_cache(cache)
+    return metrics
+
+
+def format_efficiency_value(metrics, table_key, method):
+    value = metrics.get(table_key, {}).get(method)
+    if value is None:
+        return NA
+    return f'{value:.2f}'
+
+
+def detect_defense(line):
+    for method, pattern in DEFENSE_LINE_PATTERNS.items():
+        if pattern.search(line):
+            return method
+    return None
+
+
+def replace_xx_sequence(line, values):
     out = line
-    for v in values:
-        out, n = XX_RE.subn(v, out, count=1)
-        if n == 0:
+    for value in values:
+        out, replacements = XX_RE.subn(value, out, count=1)
+        if replacements == 0:
             break
     return out
 
 
-def _detect_defense(line):
-    for defense, pattern in DEFENSE_LINE_PATTERNS.items():
-        if pattern.search(line):
-            return defense
-    return None
-
-
-def _slice_table(text, label):
+def slice_table(text, label):
     label_re = re.compile(r'\\label\{tab:' + re.escape(label) + r'\}')
-    m = label_re.search(text)
-    if not m:
+    match = label_re.search(text)
+    if not match:
         return None
-    end_match = re.search(r'\\end\{table\*?\}', text[m.end():])
+    end_match = re.search(r'\\end\{table\*?\}', text[match.end():])
     if not end_match:
         return None
-    start = m.start()
-    end = m.end() + end_match.end()
+    start = match.start()
+    end = match.end() + end_match.end()
     return start, end, text[start:end]
 
 
-def _fill_clean_baseline(text, runs):
-    sliced = _slice_table(text, 'clean_baseline')
+def fill_clean_baseline(text, runs, seeds, allow_partial):
+    sliced = slice_table(text, 'clean_baseline')
     if sliced is None:
         return text
     start, end, block = sliced
-    new_lines = []
+    lines = []
     for line in block.splitlines(keepends=True):
-        defense = _detect_defense(line)
-        if defense and 'XX.XX' in line:
+        method = detect_defense(line)
+        if method and 'XX.XX' in line:
             cells = []
             for dataset in ['mnist', 'cifar']:
                 for iid in [1, 0]:
-                    cells.append(lookup(
-                        runs, dataset, iid, defense, 'none', 0.0))
-            line = _replace_xx_sequence(line, cells)
-        new_lines.append(line)
-    return text[:start] + ''.join(new_lines) + text[end:]
+                    cells.append(lookup_percent(
+                        runs, dataset, iid, method, 'none', 0.0, 'mta',
+                        seeds, allow_partial))
+            line = replace_xx_sequence(line, cells)
+        lines.append(line)
+    return text[:start] + ''.join(lines) + text[end:]
 
 
-def _fill_untargeted_30(text, runs):
-    sliced = _slice_table(text, 'untargeted_30')
+def fill_untargeted_30(text, runs, seeds, allow_partial):
+    sliced = slice_table(text, 'untargeted_30')
     if sliced is None:
         return text
     start, end, block = sliced
-    new_lines = []
+    lines = []
     for line in block.splitlines(keepends=True):
-        defense = _detect_defense(line)
-        if defense and 'XX.XX' in line:
+        method = detect_defense(line)
+        if method and 'XX.XX' in line:
             cells = []
             for dataset in ['mnist', 'cifar']:
                 for attack in ['sign_flip', 'min_max']:
                     for iid in [1, 0]:
-                        cells.append(lookup(
-                            runs, dataset, iid, defense, attack, 0.3))
-            line = _replace_xx_sequence(line, cells)
-        new_lines.append(line)
-    return text[:start] + ''.join(new_lines) + text[end:]
+                        cells.append(lookup_percent(
+                            runs, dataset, iid, method, attack, 0.3, 'mta',
+                            seeds, allow_partial))
+            line = replace_xx_sequence(line, cells)
+        lines.append(line)
+    return text[:start] + ''.join(lines) + text[end:]
 
 
-def _fill_targeted_30(text, runs):
-    sliced = _slice_table(text, 'targeted_30')
+def fill_targeted_30(text, runs, seeds, allow_partial):
+    sliced = slice_table(text, 'targeted_30')
     if sliced is None:
         return text
     start, end, block = sliced
-
     iid_block_re = re.compile(r'\\multirow\{6\}\{\*\}\{(IID|Non-IID)\}')
-    new_lines = []
     current_iid = None
+    lines = []
     for line in block.splitlines(keepends=True):
-        m = iid_block_re.search(line)
-        if m:
-            current_iid = 1 if m.group(1) == 'IID' else 0
-        defense = _detect_defense(line)
-        if defense and 'XX.XX' in line and current_iid is not None:
+        match = iid_block_re.search(line)
+        if match:
+            current_iid = 1 if match.group(1) == 'IID' else 0
+        method = detect_defense(line)
+        if method and 'XX.XX' in line and current_iid is not None:
             cells = []
             for dataset in ['mnist', 'cifar']:
                 for attack in ['label_flip', 'backdoor']:
-                    cells.append(lookup(
-                        runs, dataset, current_iid, defense, attack,
-                        0.3, 'mta'))
-                    cells.append(lookup(
-                        runs, dataset, current_iid, defense, attack,
-                        0.3, 'asr'))
-            line = _replace_xx_sequence(line, cells)
-        new_lines.append(line)
-    return text[:start] + ''.join(new_lines) + text[end:]
+                    cells.append(lookup_percent(
+                        runs, dataset, current_iid, method, attack, 0.3,
+                        'mta', seeds, allow_partial))
+                    cells.append(lookup_percent(
+                        runs, dataset, current_iid, method, attack, 0.3,
+                        'asr', seeds, allow_partial))
+            line = replace_xx_sequence(line, cells)
+        lines.append(line)
+    return text[:start] + ''.join(lines) + text[end:]
 
 
-def fill_tex(in_path, out_path, runs):
-    text = Path(in_path).read_text()
-    text = _fill_clean_baseline(text, runs)
-    text = _fill_untargeted_30(text, runs)
-    text = _fill_targeted_30(text, runs)
-    Path(out_path).write_text(text)
+def fill_efficiency_table(text, label, metrics, table_key):
+    sliced = slice_table(text, label)
+    if sliced is None:
+        return text
+    start, end, block = sliced
+    lines = []
+    for line in block.splitlines(keepends=True):
+        method = detect_defense(line)
+        if method in EFFICIENCY_METHODS and 'XX.XX' in line:
+            value = format_efficiency_value(metrics, table_key, method)
+            line = replace_xx_sequence(line, [value])
+        lines.append(line)
+    return text[:start] + ''.join(lines) + text[end:]
+
+
+def filled_path(in_path):
+    path = Path(in_path)
+    return path.with_name(path.stem + '_filled' + path.suffix)
+
+
+def fill_latex_text(text, runs, seeds, efficiency_metrics,
+                    allow_partial=False):
+    text = fill_clean_baseline(text, runs, seeds, allow_partial)
+    text = fill_untargeted_30(text, runs, seeds, allow_partial)
+    text = fill_targeted_30(text, runs, seeds, allow_partial)
+    if efficiency_metrics is not None:
+        text = fill_efficiency_table(
+            text, 'upload_size', efficiency_metrics, 'upload_size_mb')
+        text = fill_efficiency_table(
+            text, 'audit_time', efficiency_metrics, 'audit_time_s')
+        text = fill_efficiency_table(
+            text, 'e2e_time', efficiency_metrics, 'e2e_time_s')
+    return text
+
+
+def write_latex_output(text, out_path, print_stdout=True):
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text)
     remaining = text.count('XX.XX')
     print(f'wrote {out_path}  (remaining XX.XX placeholders: {remaining})')
-    if remaining:
-        print('  -> placeholders left in tables this script does not fill: '
-              'tab:upload_size, tab:audit_time, tab:e2e_time '
-              '(these need the privacy-preserving protocols).')
+    if print_stdout:
+        print()
+        print('% ==================== Filled LaTeX Section ====================')
+        print(text)
 
 
-# ---------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------
+def fill_tex(in_path, out_path, runs, seeds, efficiency_metrics,
+             allow_partial=False, print_stdout=False):
+    in_path = Path(in_path)
+    text = fill_latex_text(
+        in_path.read_text(), runs, seeds, efficiency_metrics, allow_partial)
+    write_latex_output(text, out_path, print_stdout=print_stdout)
+
+
 def cmd_sweep(args):
-    run_sweep(args.gpus, only_dataset=args.only,
-              dry_run=args.dry_run, list_pending=args.list_pending)
+    configs = make_main_configs(
+        args.seeds, args.methods, args.only, args.attacks, args.test_interval)
+    dispatch_configs(
+        configs, args.gpus, args.tasks_per_gpu,
+        args.dry_run, args.list_pending)
+
+
+def cmd_efficiency(args):
+    configs = make_efficiency_configs(
+        args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
+        args.efficiency_rounds, test_interval=0)
+    dispatch_configs(
+        configs, args.gpus, args.tasks_per_gpu,
+        args.dry_run, args.list_pending)
+
+
+def cmd_status(args):
+    runs = load_runs()
+    main_configs = make_main_configs(
+        args.seeds, args.methods, args.only, args.attacks, args.test_interval)
+    report_missing('Main experiment status:', main_configs, runs)
+    if args.with_efficiency:
+        efficiency_configs = make_efficiency_configs(
+            args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
+            args.efficiency_rounds, test_interval=0)
+        report_missing('Efficiency run status:', efficiency_configs, runs)
 
 
 def cmd_report(args):
     runs = load_runs()
     if not runs:
-        print('No completed pickles found in', SAVE_OBJECTS)
+        print(f'No completed pickles found in {SAVE_OBJECTS}')
         return
-    report_missing(runs)
-    print_table_clean(runs)
-    print_table_untargeted_30(runs)
-    print_table_targeted_30(runs)
-    write_csv(runs)
-    if not args.no_plots:
-        make_plots(runs)
+
+    main_configs = make_main_configs(
+        args.seeds, args.methods, args.only, args.attacks, args.test_interval)
+    report_missing('Main experiment status:', main_configs, runs)
+    if args.with_efficiency:
+        efficiency_configs = make_efficiency_configs(
+            args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
+            args.efficiency_rounds, test_interval=0)
+        report_missing('Efficiency run status:', efficiency_configs, runs)
+
+    write_csvs(runs, args.seeds, allow_partial=args.allow_partial)
+
+    if args.no_plots:
+        print('skipped plots (--no-plots)')
+    else:
+        make_plots(runs, args.seeds, allow_partial=args.allow_partial)
+
+    efficiency_metrics = None
+    if args.with_efficiency:
+        efficiency_metrics = collect_efficiency_metrics(runs, args)
+
+    rendered_latex = fill_latex_text(
+        ROBUSTNESS_LATEX_TEMPLATE, runs, args.seeds, efficiency_metrics,
+        allow_partial=args.allow_partial)
+    write_latex_output(
+        rendered_latex, args.latex_out,
+        print_stdout=not args.no_latex_stdout)
+
     if args.fill:
-        out = args.fill_out or _filled_path(args.fill)
-        fill_tex(args.fill, out, runs)
+        output_path = args.fill if args.in_place else (
+            args.fill_out or filled_path(args.fill))
+        fill_tex(
+            args.fill, output_path, runs, args.seeds, efficiency_metrics,
+            allow_partial=args.allow_partial, print_stdout=False)
 
 
 def cmd_all(args):
     cmd_sweep(args)
     if args.dry_run or args.list_pending:
         return
+    if args.with_efficiency and not args.no_efficiency:
+        cmd_efficiency(args)
     cmd_report(args)
-
-
-def _filled_path(in_path):
-    p = Path(in_path)
-    return p.with_name(p.stem + '_filled' + p.suffix)
 
 
 def build_parser():
@@ -614,37 +1300,114 @@ def build_parser():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('mode', nargs='?', default='all',
-                        choices=['all', 'sweep', 'report'],
-                        help='all: sweep then report (default); '
-                        'sweep: only run pending experiments; '
-                        'report: only aggregate, plot, and fill')
-    parser.add_argument('--gpus', type=int, nargs='+', default=[0],
-                        help='GPU ids to use during sweep (one worker per id)')
-    parser.add_argument('--only', choices=['mnist', 'cifar'], default=None,
-                        help='Restrict the sweep to one dataset')
-    parser.add_argument('--dry_run', action='store_true',
-                        help='Print pending sweep commands and exit')
-    parser.add_argument('--list_pending', action='store_true',
-                        help='Same as --dry_run')
-    parser.add_argument('--fill', default=None,
-                        help='Path to your experiment-section .tex file. '
-                        'A copy with XX.XX placeholders filled is written '
-                        'next to it (default: <stem>_filled.tex).')
-    parser.add_argument('--fill_out', default=None,
-                        help='Override the output path for --fill')
-    parser.add_argument('--no_plots', action='store_true',
-                        help='Skip writing fig/*_sweep.pdf')
+    parser.add_argument(
+        'mode', nargs='?', default='all',
+        choices=['all', 'sweep', 'efficiency', 'report', 'status'],
+        help='default: all')
+    parser.add_argument(
+        '--gpus', type=int, nargs='+', default=[0],
+        help='GPU ids to use')
+    parser.add_argument(
+        '--tasks-per-gpu', '--tasks_per_gpu', type=int, default=1,
+        help='concurrent worker processes to launch per GPU')
+    parser.add_argument(
+        '--seeds', type=int, nargs='+', default=SEEDS,
+        help='random seeds to run and average; default: 1')
+    parser.add_argument(
+        '--methods', type=normalize_method, nargs='+', default=METHODS,
+        help='subset of methods to sweep')
+    parser.add_argument(
+        '--attacks', choices=list(ATTACK_RATIOS.keys()), nargs='+',
+        default=None, help='subset of attacks to sweep')
+    parser.add_argument(
+        '--only', choices=['mnist', 'cifar'], default=None,
+        help='restrict the main sweep to one dataset')
+    parser.add_argument(
+        '--test_interval', type=int, default=0,
+        help='main-sweep evaluation interval; 0 records only final metrics')
+    parser.add_argument(
+        '--dry-run', '--dry_run', action='store_true',
+        help='print pending commands without running them')
+    parser.add_argument(
+        '--list-pending', '--list_pending', action='store_true',
+        help='same as --dry-run')
+    parser.add_argument(
+        '--allow-partial', '--allow_partial', action='store_true',
+        help='average available seeds instead of requiring every seed')
+    parser.add_argument(
+        '--latex-out', '--latex_out', default=str(DEFAULT_LATEX_OUT),
+        help='where to write the filled built-in LaTeX section')
+    parser.add_argument(
+        '--no-latex-stdout', '--no_latex_stdout', action='store_true',
+        help='write the LaTeX section to disk without printing it')
+    parser.add_argument(
+        '--fill', default=None,
+        help='optional extra LaTeX file to fill in addition to the built-in section')
+    parser.add_argument(
+        '--fill-out', '--fill_out', default=None,
+        help='output .tex path; default is <input>_filled.tex')
+    parser.add_argument(
+        '--in-place', '--in_place', action='store_true',
+        help='overwrite --fill instead of writing a sibling filled file')
+    parser.add_argument(
+        '--no-plots', '--no_plots', action='store_true',
+        help='skip writing fig/*.pdf')
+    parser.add_argument(
+        '--with-efficiency', '--with_efficiency', action='store_true',
+        help='also run/report optional efficiency and privacy-protocol tables')
+    parser.add_argument(
+        '--no-efficiency', '--no_efficiency', action='store_true',
+        help='with --with-efficiency, skip the 50-round efficiency jobs')
+    parser.add_argument(
+        '--efficiency-iid', '--efficiency_iid', type=int, default=1,
+        choices=[0, 1], help='CIFAR distribution for efficiency timing')
+    parser.add_argument(
+        '--efficiency-rounds', '--efficiency_rounds', type=int, default=50,
+        help='benign CIFAR rounds used for online round-time averaging')
+    parser.add_argument(
+        '--share-bits', '--share_bits', type=int, default=64,
+        help='ring/share bit width used for PDFL and PriTrust upload size')
+    parser.add_argument(
+        '--share-count', '--share_count', type=int, default=2,
+        help='number of additive shares uploaded per model value')
+    parser.add_argument(
+        '--paillier-bits', '--paillier_bits', type=int, default=2048,
+        help='Paillier modulus bits; ciphertext size is 2x this value')
+    parser.add_argument(
+        '--pritrust-header-bytes', '--pritrust_header_bytes', type=int,
+        default=256,
+        help='constant per-round PriTrust side-information header')
+    parser.add_argument(
+        '--audit-benchmark-rounds', '--audit_benchmark_rounds', type=int,
+        default=50,
+        help='synthetic CIFAR aggregation rounds for audit-time benchmark')
+    parser.add_argument(
+        '--audit-benchmark-clients', '--audit_benchmark_clients', type=int,
+        default=10,
+        help='selected clients in the synthetic audit-time benchmark')
+    parser.add_argument(
+        '--skip-audit-benchmark', '--skip_audit_benchmark',
+        action='store_true', help='leave audit-time table as N/A')
+    parser.add_argument(
+        '--refresh-efficiency', '--refresh_efficiency', action='store_true',
+        help='ignore cached audit benchmark values')
     return parser
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    args.methods = [normalize_method(method) for method in args.methods]
+    args.seeds = [int(seed) for seed in args.seeds]
+
     if args.mode == 'sweep':
         cmd_sweep(args)
+    elif args.mode == 'efficiency':
+        cmd_efficiency(args)
     elif args.mode == 'report':
         cmd_report(args)
+    elif args.mode == 'status':
+        cmd_status(args)
     else:
         cmd_all(args)
 
