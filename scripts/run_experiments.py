@@ -29,7 +29,8 @@ not from homomorphic encryption or secret-sharing protocol costs.
 The runner is resumable: before dispatching a config, it scans
 ``save/objects/*.pkl`` and skips matching completed runs.
 By default each GPU runs at most 3 experiments concurrently, with at most
-2 CIFAR-10 experiments among those 3.
+2 CIFAR-10 experiments among those 3. If a GPU has no CIFAR-10 experiment
+active, it can run up to 5 MNIST experiments concurrently.
 """
 
 import argparse
@@ -42,7 +43,7 @@ import statistics
 import subprocess
 import sys
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 
@@ -58,6 +59,7 @@ SUMMARY_CSV_PATH = SAVE_DIR / 'results_summary.csv'
 EFFICIENCY_JSON_PATH = SAVE_DIR / 'efficiency_summary.json'
 DEFAULT_LATEX_OUT = SAVE_DIR / 'experiment_results_section.tex'
 DEFAULT_RAW_OUT = SAVE_DIR / f'rawdata{date.today().isoformat()}'
+DEFAULT_PLOT_DATA_DIR = DEFAULT_RAW_OUT / 'plot_data'
 PYTHON = sys.executable
 
 SEEDS = [1]
@@ -558,18 +560,22 @@ def pending_configs(configs, runs):
 
 
 def dispatch_configs(configs, gpus, tasks_per_gpu=3, max_cifar_per_gpu=2,
-                     dry_run=False, list_pending=False):
+                     mnist_only_tasks_per_gpu=5, dry_run=False,
+                     list_pending=False):
     runs = load_runs()
     pending = pending_configs(configs, runs)
     tasks_per_gpu = max(1, int(tasks_per_gpu))
     max_cifar_per_gpu = max(1, min(int(max_cifar_per_gpu), tasks_per_gpu))
+    mnist_only_tasks_per_gpu = max(
+        tasks_per_gpu, int(mnist_only_tasks_per_gpu))
 
     print(f'Total configs:    {len(configs)}')
     print(f'Already complete: {len(configs) - len(pending)}')
     print(f'Pending:          {len(pending)}')
     print(
         f'Concurrency:      {len(gpus)} GPU(s) x {tasks_per_gpu} task(s), '
-        f'max CIFAR per GPU: {max_cifar_per_gpu}'
+        f'max CIFAR per GPU: {max_cifar_per_gpu}, '
+        f'MNIST-only per GPU: {mnist_only_tasks_per_gpu}'
     )
     print()
 
@@ -590,15 +596,19 @@ def dispatch_configs(configs, gpus, tasks_per_gpu=3, max_cifar_per_gpu=2,
     while jobs or active:
         launched = False
         for gpu_id in gpus:
-            while _gpu_active_count(active, gpu_id) < tasks_per_gpu:
+            while _gpu_active_count(active, gpu_id) < _gpu_capacity(
+                    active, gpu_id, tasks_per_gpu,
+                    mnist_only_tasks_per_gpu):
                 job_pos = _select_job_for_gpu(
-                    jobs, active, gpu_id, max_cifar_per_gpu)
+                    jobs, active, gpu_id, tasks_per_gpu,
+                    max_cifar_per_gpu, mnist_only_tasks_per_gpu)
                 if job_pos is None:
                     break
                 idx, total, cfg = jobs.pop(job_pos)
                 active.append(_launch_job(
                     idx, total, cfg, gpu_id,
-                    _next_gpu_slot(active, gpu_id, tasks_per_gpu)))
+                    _next_gpu_slot(
+                        active, gpu_id, mnist_only_tasks_per_gpu)))
                 launched = True
 
         completed = _reap_completed(active)
@@ -621,6 +631,12 @@ def _gpu_active_cifar_count(active, gpu_id):
     )
 
 
+def _gpu_capacity(active, gpu_id, tasks_per_gpu, mnist_only_tasks_per_gpu):
+    if _gpu_active_cifar_count(active, gpu_id) == 0:
+        return mnist_only_tasks_per_gpu
+    return tasks_per_gpu
+
+
 def _next_gpu_slot(active, gpu_id, tasks_per_gpu):
     used = {
         int(job['slot'])
@@ -633,13 +649,32 @@ def _next_gpu_slot(active, gpu_id, tasks_per_gpu):
     return tasks_per_gpu - 1
 
 
-def _select_job_for_gpu(jobs, active, gpu_id, max_cifar_per_gpu):
+def _select_job_for_gpu(jobs, active, gpu_id, tasks_per_gpu,
+                        max_cifar_per_gpu, mnist_only_tasks_per_gpu):
+    active_count = _gpu_active_count(active, gpu_id)
     cifar_active = _gpu_active_cifar_count(active, gpu_id)
     for position, (_, _, cfg) in enumerate(jobs):
-        if cfg['dataset'] == 'cifar' and cifar_active >= max_cifar_per_gpu:
-            continue
+        if cfg['dataset'] == 'cifar':
+            if cifar_active >= max_cifar_per_gpu:
+                continue
+            if active_count >= tasks_per_gpu:
+                continue
+        else:
+            capacity = (
+                mnist_only_tasks_per_gpu
+                if cifar_active == 0 else tasks_per_gpu
+            )
+            if active_count >= capacity:
+                continue
         return position
     return None
+
+
+def _format_duration(seconds):
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
 
 
 def _launch_job(idx, total, cfg, gpu_id, worker_slot):
@@ -651,7 +686,8 @@ def _launch_job(idx, total, cfg, gpu_id, worker_slot):
     log_path = SWEEP_LOG_DIR / f'{tag}.gpu{gpu_id}.slot{worker_slot}.log'
     cmd = build_command(cfg, gpu_id=gpu_id)
     output = open(log_path, 'w')
-    start = time.time()
+    start = time.monotonic()
+    started_at = datetime.now()
     worker_name = f'gpu{gpu_id}:{worker_slot}'
     print(f'[{worker_name}] [{idx:4d}/{total}] start {tag}', flush=True)
     proc = subprocess.Popen(cmd, stdout=output, stderr=subprocess.STDOUT)
@@ -665,6 +701,7 @@ def _launch_job(idx, total, cfg, gpu_id, worker_slot):
         'total': total,
         'tag': tag,
         'start': start,
+        'started_at': started_at,
         'worker_name': worker_name,
     }
 
@@ -677,11 +714,17 @@ def _reap_completed(active):
             continue
         job['output'].close()
         active.remove(job)
-        elapsed = time.time() - job['start']
+        elapsed = time.monotonic() - job['start']
         status = 'OK' if returncode == 0 else f'FAIL({returncode})'
+        finished_at = datetime.now()
+        timing = (
+            f'{_format_duration(elapsed)} | '
+            f'{job["started_at"].strftime("%H:%M:%S")} | '
+            f'{finished_at.strftime("%H:%M:%S")}'
+        )
         print(
             f'[{job["worker_name"]}] [{job["idx"]:4d}/{job["total"]}] '
-            f'{status} {elapsed:8.1f}s {job["tag"]}',
+            f'{status} [{timing}] {job["tag"]}',
             flush=True,
         )
         completed = True
@@ -967,9 +1010,96 @@ def export_sorted_raw_data(runs, raw_root=DEFAULT_RAW_OUT):
     for csv_path in [RUNS_CSV_PATH, SUMMARY_CSV_PATH]:
         if csv_path.exists():
             shutil.copy2(csv_path, raw_root / csv_path.name)
+    plot_data_dir = DEFAULT_PLOT_DATA_DIR
+    if plot_data_dir.exists():
+        dest_plot_dir = raw_root / 'plot_data'
+        dest_plot_dir.mkdir(parents=True, exist_ok=True)
+        for csv_path in sorted(plot_data_dir.glob('*.csv')):
+            if csv_path.resolve() != (dest_plot_dir / csv_path.name).resolve():
+                shutil.copy2(csv_path, dest_plot_dir / csv_path.name)
 
     print(f'wrote sorted raw data: {raw_root} ({len(rows)} runs)')
     print(f'wrote raw manifest: {manifest_path}')
+
+
+def plot_data_rows(runs, attack, ratios, figure_name, seeds,
+                   allow_partial=False):
+    rows = []
+    panels = [
+        ('mnist', 1, 'MNIST IID'),
+        ('mnist', 0, 'MNIST Non-IID'),
+        ('cifar', 1, 'CIFAR-10 IID'),
+        ('cifar', 0, 'CIFAR-10 Non-IID'),
+    ]
+    metrics = ['mta'] if attack in ('sign_flip', 'min_max') else ['asr', 'mta']
+    for dataset, iid, panel in panels:
+        for method in METHODS:
+            for ratio in ratios:
+                for metric in metrics:
+                    value, seeds_present, missing = metric_values(
+                        runs,
+                        base_config(
+                            dataset, iid, method, attack, ratio, seeds[0],
+                            DEFAULT_EPOCHS[dataset], test_interval=0),
+                        metric,
+                        seeds,
+                        allow_partial=allow_partial,
+                    )
+                    if value is None:
+                        continue
+                    rows.append({
+                        'figure': figure_name,
+                        'dataset': dataset,
+                        'distribution': iid_label(iid),
+                        'panel': panel,
+                        'defense': method,
+                        'method_label': METHOD_LABELS[method],
+                        'attack': attack,
+                        'malicious_ratio': ratio,
+                        'malicious_ratio_percent': 100.0 * ratio,
+                        'metric': metric,
+                        'value': value,
+                        'value_percent': 100.0 * value,
+                        'seeds_present': seeds_present,
+                        'seeds_expected': len(seeds),
+                        'missing_seeds': ' '.join(str(seed) for seed in missing),
+                    })
+    return rows
+
+
+def write_plot_data_csv(path, rows):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        'figure', 'dataset', 'distribution', 'panel', 'defense',
+        'method_label', 'attack', 'malicious_ratio',
+        'malicious_ratio_percent', 'metric', 'value', 'value_percent',
+        'seeds_present', 'seeds_expected', 'missing_seeds',
+    ]
+    with open(path, 'w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f'wrote plot data: {path} ({len(rows)} rows)')
+
+
+def export_plot_data(runs, seeds, plot_data_dir=DEFAULT_PLOT_DATA_DIR,
+                     allow_partial=False):
+    plot_data_dir = Path(plot_data_dir)
+    specs = [
+        ('signflip_sweep', 'sign_flip', [0.0, 0.1, 0.2, 0.3]),
+        ('minmax_sweep', 'min_max', [0.0, 0.1, 0.2, 0.3]),
+        ('labelflip_sweep', 'label_flip', [0.1, 0.2, 0.3]),
+        ('backdoor_sweep', 'backdoor', [0.1, 0.2, 0.3]),
+    ]
+    all_rows = []
+    for figure_name, attack, ratios in specs:
+        rows = plot_data_rows(
+            runs, attack, ratios, figure_name, seeds,
+            allow_partial=allow_partial)
+        all_rows.extend(rows)
+        write_plot_data_csv(plot_data_dir / f'{figure_name}.csv', rows)
+    write_plot_data_csv(plot_data_dir / 'all_figures.csv', all_rows)
 
 
 def plot_panels(runs, attack, ratios, metric, out_path, seeds,
@@ -1421,6 +1551,7 @@ def cmd_sweep(args):
     dispatch_configs(
         configs, args.gpus, args.tasks_per_gpu,
         args.max_cifar_per_gpu,
+        args.mnist_only_tasks_per_gpu,
         args.dry_run, args.list_pending)
 
 
@@ -1431,6 +1562,7 @@ def cmd_efficiency(args):
     dispatch_configs(
         configs, args.gpus, args.tasks_per_gpu,
         args.max_cifar_per_gpu,
+        args.mnist_only_tasks_per_gpu,
         args.dry_run, args.list_pending)
 
 
@@ -1462,6 +1594,10 @@ def cmd_report(args):
         report_missing('Efficiency run status:', efficiency_configs, runs)
 
     write_csvs(runs, args.seeds, allow_partial=args.allow_partial)
+    if not args.no_plot_data_export:
+        export_plot_data(
+            runs, args.seeds, args.plot_data_out,
+            allow_partial=args.allow_partial)
     if not args.no_raw_export:
         export_sorted_raw_data(runs, args.raw_out)
 
@@ -1519,6 +1655,10 @@ def build_parser():
         '--max-cifar-per-gpu', '--max_cifar_per_gpu', type=int, default=2,
         help='maximum concurrent CIFAR-10 experiments per GPU')
     parser.add_argument(
+        '--mnist-only-tasks-per-gpu', '--mnist_only_tasks_per_gpu',
+        type=int, default=5,
+        help='maximum concurrent experiments per GPU when all are MNIST')
+    parser.add_argument(
         '--seeds', type=int, nargs='+', default=SEEDS,
         help='random seeds to run and average; default: 1')
     parser.add_argument(
@@ -1548,6 +1688,14 @@ def build_parser():
     parser.add_argument(
         '--raw-out', '--raw_out', default=str(DEFAULT_RAW_OUT),
         help='where to export sorted raw metrics, logs, and args')
+    parser.add_argument(
+        '--plot-data-out', '--plot_data_out',
+        default=str(DEFAULT_PLOT_DATA_DIR),
+        help='where to export CSV data used by the four figures')
+    parser.add_argument(
+        '--no-plot-data-export', '--no_plot_data_export',
+        action='store_true',
+        help='skip exporting the four figure data CSV files')
     parser.add_argument(
         '--no-raw-export', '--no_raw_export', action='store_true',
         help='skip exporting sorted raw data')
@@ -1606,6 +1754,10 @@ def main():
         parser.error('--max-cifar-per-gpu must be at least 1')
     if args.max_cifar_per_gpu > args.tasks_per_gpu:
         args.max_cifar_per_gpu = args.tasks_per_gpu
+    if args.mnist_only_tasks_per_gpu < 1:
+        parser.error('--mnist-only-tasks-per-gpu must be at least 1')
+    if args.mnist_only_tasks_per_gpu < args.tasks_per_gpu:
+        args.mnist_only_tasks_per_gpu = args.tasks_per_gpu
 
     if args.mode == 'sweep':
         cmd_sweep(args)
