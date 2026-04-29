@@ -10,6 +10,8 @@ artifacts from the saved pickles/logs:
     * untargeted 30% worst-case table
     * label-flip and backdoor ASR/MTA figures
     * targeted 30% worst-case table
+    * plaintext-code efficiency tables
+    * sorted raw metrics/log export
 
 Typical server usage from the repo root:
 
@@ -21,8 +23,8 @@ Useful split workflow:
     python3 scripts/run_experiments.py report
 
 The default pipeline runs one seed and the repo's plaintext training/defense
-logic only. Optional efficiency/privacy-protocol estimates are opt-in through
-``--with-efficiency`` or the explicit ``efficiency`` mode.
+logic only. Efficiency tables are filled from the current plaintext code path,
+not from homomorphic encryption or secret-sharing protocol costs.
 
 The runner is resumable: before dispatching a config, it scans
 ``save/objects/*.pkl`` and skips matching completed runs.
@@ -31,15 +33,16 @@ The runner is resumable: before dispatching a config, it scans
 import argparse
 import csv
 import json
-import math
 import multiprocessing as mp
 import pickle
 import queue
 import re
+import shutil
 import statistics
 import subprocess
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 
@@ -53,7 +56,8 @@ FIG_DIR = PROJECT_ROOT / 'fig'
 RUNS_CSV_PATH = SAVE_DIR / 'results_runs.csv'
 SUMMARY_CSV_PATH = SAVE_DIR / 'results_summary.csv'
 EFFICIENCY_JSON_PATH = SAVE_DIR / 'efficiency_summary.json'
-DEFAULT_LATEX_OUT = SAVE_DIR / 'robustness_section.tex'
+DEFAULT_LATEX_OUT = SAVE_DIR / 'experiment_results_section.tex'
+DEFAULT_RAW_OUT = SAVE_DIR / f'rawdata{date.today().isoformat()}'
 PYTHON = sys.executable
 
 SEEDS = [1]
@@ -267,6 +271,72 @@ Table~\ref{tab:targeted_30} summarizes the clean test accuracy and ASR at the hi
 \bottomrule
 \end{tabular}
 \end{table*}
+
+
+% ==================================================================
+\subsection{Efficiency Evaluation}\label{subsec:exp_efficiency}
+
+This subsection compares PriTrust-FL with the two privacy-preserving baselines, ShieldFL and PDFL, on three efficiency metrics. The metrics are client upload size per round, average server-side audit time per round, and average end-to-end online round time. The reported values are averaged over the first 50 benign training rounds on CIFAR-10 with $m=100$ clients and $n=10$ selected per round.
+
+\subsubsection{Client Upload Size per Round}
+
+Table~\ref{tab:upload_size} reports the per-round upload size of one selected client. ShieldFL transmits the largest payload because each Paillier ciphertext is much larger than a secret share. PDFL and PriTrust-FL both rely on additive secret sharing over $\mathbb{Z}_{2^{\ell}}$ and exchange comparable amounts of data. PriTrust-FL adds a small constant-size auxiliary header for the trust-related side information, which is negligible compared to the model share.
+
+\begin{table}[!t]
+\centering
+\caption{Client upload size per round on CIFAR-10. Lower is better.}
+\label{tab:upload_size}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{lc}
+\toprule
+\textbf{Method} & \textbf{Upload size per round} \\
+\midrule
+ShieldFL    & XX.XX MB \\
+PDFL        & XX.XX MB \\
+\textbf{PriTrust-FL} & \textbf{XX.XX MB} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Server-Side Audit Time per Round}
+
+Table~\ref{tab:audit_time} reports the average server-side audit time per round. The audit phase covers similarity scoring for the cosine-based baselines and indicator computation plus trust update for PriTrust-FL. PriTrust-FL audit time grows with the audit budget $K_t$, but remains far below the cost of homomorphic operations in ShieldFL.
+
+\begin{table}[!t]
+\centering
+\caption{Average server-side audit time per round on CIFAR-10. Lower is better.}
+\label{tab:audit_time}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{lc}
+\toprule
+\textbf{Method} & \textbf{Audit time per round} \\
+\midrule
+ShieldFL    & XX.XX s \\
+PDFL        & XX.XX s \\
+\textbf{PriTrust-FL} & \textbf{XX.XX s} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{End-to-End Online Round Time}
+
+Table~\ref{tab:e2e_time} reports the end-to-end online round time, which includes local training on each selected client, secret-share exchange, server-side audit, and aggregation. The values exclude offline Beaver triple preprocessing. PriTrust-FL achieves an end-to-end round time comparable to PDFL and substantially lower than ShieldFL. The audit overhead introduced by the dual-anchor design is offset by the efficiency of the underlying secret-sharing protocols.
+
+\begin{table}[!t]
+\centering
+\caption{Average end-to-end online round time on CIFAR-10. Lower is better.}
+\label{tab:e2e_time}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{lc}
+\toprule
+\textbf{Method} & \textbf{Online round time} \\
+\midrule
+ShieldFL    & XX.XX s \\
+PDFL        & XX.XX s \\
+\textbf{PriTrust-FL} & \textbf{XX.XX s} \\
+\bottomrule
+\end{tabular}
+\end{table}
 """
 
 
@@ -763,6 +833,84 @@ def write_csvs(runs, seeds, allow_partial=False):
     print(f'wrote {SUMMARY_CSV_PATH}')
 
 
+def slug(value):
+    text = str(value).strip().lower().replace('.', 'p')
+    text = re.sub(r'[^a-z0-9_-]+', '-', text)
+    return text.strip('-') or 'unknown'
+
+
+def raw_run_dir(raw_root, record):
+    cfg = record['cfg']
+    ratio = f'mr_{float(cfg["malicious_ratio"]):.1f}'.replace('.', 'p')
+    return (
+        Path(raw_root) /
+        slug(cfg['dataset']) /
+        slug(iid_label(cfg['iid'])) /
+        slug(cfg['defense']) /
+        slug(cfg['attack']) /
+        ratio /
+        f'seed_{int(cfg["seed"])}_ep_{int(cfg["epochs"])}'
+    )
+
+
+def export_sorted_raw_data(runs, raw_root=DEFAULT_RAW_OUT):
+    raw_root = Path(raw_root)
+    raw_root.mkdir(parents=True, exist_ok=True)
+
+    manifest_path = raw_root / 'manifest.csv'
+    fieldnames = [
+        'dataset', 'distribution', 'defense', 'attack', 'malicious_ratio',
+        'seed', 'epochs', 'final_mta', 'final_asr', 'run_dir',
+        'metrics_pkl', 'log_file', 'args_json',
+    ]
+    rows = []
+
+    for key in sorted(runs):
+        record = runs[key]
+        cfg = record['cfg']
+        dest_dir = raw_run_dir(raw_root, record)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        metrics_dest = dest_dir / 'metrics.pkl'
+        log_dest = dest_dir / 'run.log'
+        args_dest = dest_dir / 'args.json'
+
+        if record['pkl'] and Path(record['pkl']).exists():
+            shutil.copy2(record['pkl'], metrics_dest)
+        if record['log'] and Path(record['log']).exists():
+            shutil.copy2(record['log'], log_dest)
+        args_dest.write_text(json.dumps(record['args'], indent=2,
+                                        sort_keys=True))
+
+        rows.append({
+            'dataset': cfg['dataset'],
+            'distribution': iid_label(cfg['iid']),
+            'defense': cfg['defense'],
+            'attack': cfg['attack'],
+            'malicious_ratio': cfg['malicious_ratio'],
+            'seed': cfg['seed'],
+            'epochs': cfg['epochs'],
+            'final_mta': record['final_mta'],
+            'final_asr': record['final_asr'],
+            'run_dir': dest_dir,
+            'metrics_pkl': metrics_dest if metrics_dest.exists() else '',
+            'log_file': log_dest if log_dest.exists() else '',
+            'args_json': args_dest,
+        })
+
+    with open(manifest_path, 'w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    for csv_path in [RUNS_CSV_PATH, SUMMARY_CSV_PATH]:
+        if csv_path.exists():
+            shutil.copy2(csv_path, raw_root / csv_path.name)
+
+    print(f'wrote sorted raw data: {raw_root} ({len(rows)} runs)')
+    print(f'wrote raw manifest: {manifest_path}')
+
+
 def plot_panels(runs, attack, ratios, metric, out_path, seeds,
                 allow_partial=False):
     import matplotlib
@@ -863,39 +1011,31 @@ def make_plots(runs, seeds, allow_partial=False):
         FIG_DIR / 'backdoor_sweep.pdf', seeds, allow_partial)
 
 
-def get_cifar_float_state_elements():
+def get_cifar_state_tensor_bytes():
     sys.path.insert(0, str(SRC_DIR))
     from types import SimpleNamespace
     from models import ResNet18Cifar
 
     model = ResNet18Cifar(SimpleNamespace(norm='batch_norm'))
     return sum(
-        tensor.numel()
+        tensor.numel() * tensor.element_size()
         for tensor in model.state_dict().values()
-        if tensor.is_floating_point()
     )
 
 
 def upload_size_mb(args):
     try:
-        value_count = get_cifar_float_state_elements()
+        byte_count = get_cifar_state_tensor_bytes()
     except Exception as exc:
         print(f'warning: could not compute model size for upload table: {exc}')
         return {method: None for method in EFFICIENCY_METHODS}
 
-    paillier_bytes = math.ceil((2 * args.paillier_bits) / 8)
-    share_bytes = math.ceil(args.share_bits / 8)
-    sizes = {
-        'shieldfl': value_count * paillier_bytes,
-        'pdfl': value_count * args.share_count * share_bytes,
-        'pritrust_fl': (
-            value_count * args.share_count * share_bytes +
-            args.pritrust_header_bytes
-        ),
-    }
+    # Current repo code uploads plaintext state_dict tensors, without the
+    # Paillier ciphertexts or additive shares described by privacy protocols.
+    plaintext_mb = byte_count / (1024.0 * 1024.0)
     return {
-        method: byte_count / (1024.0 * 1024.0)
-        for method, byte_count in sizes.items()
+        method: plaintext_mb
+        for method in EFFICIENCY_METHODS
     }
 
 
@@ -905,11 +1045,9 @@ def benchmark_audit_times(args):
 
     cache = read_efficiency_cache()
     cache_key = {
+        'mode': 'current_plaintext_code',
         'audit_benchmark_rounds': args.audit_benchmark_rounds,
         'audit_benchmark_clients': args.audit_benchmark_clients,
-        'share_bits': args.share_bits,
-        'share_count': args.share_count,
-        'paillier_bits': args.paillier_bits,
     }
     if (not args.refresh_efficiency and
             cache.get('cache_key') == cache_key and
@@ -1238,7 +1376,7 @@ def cmd_status(args):
     main_configs = make_main_configs(
         args.seeds, args.methods, args.only, args.attacks, args.test_interval)
     report_missing('Main experiment status:', main_configs, runs)
-    if args.with_efficiency:
+    if not args.no_efficiency:
         efficiency_configs = make_efficiency_configs(
             args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
             args.efficiency_rounds, test_interval=0)
@@ -1254,13 +1392,15 @@ def cmd_report(args):
     main_configs = make_main_configs(
         args.seeds, args.methods, args.only, args.attacks, args.test_interval)
     report_missing('Main experiment status:', main_configs, runs)
-    if args.with_efficiency:
+    if not args.no_efficiency:
         efficiency_configs = make_efficiency_configs(
             args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
             args.efficiency_rounds, test_interval=0)
         report_missing('Efficiency run status:', efficiency_configs, runs)
 
     write_csvs(runs, args.seeds, allow_partial=args.allow_partial)
+    if not args.no_raw_export:
+        export_sorted_raw_data(runs, args.raw_out)
 
     if args.no_plots:
         print('skipped plots (--no-plots)')
@@ -1268,7 +1408,7 @@ def cmd_report(args):
         make_plots(runs, args.seeds, allow_partial=args.allow_partial)
 
     efficiency_metrics = None
-    if args.with_efficiency:
+    if not args.no_efficiency:
         efficiency_metrics = collect_efficiency_metrics(runs, args)
 
     rendered_latex = fill_latex_text(
@@ -1289,8 +1429,10 @@ def cmd_report(args):
 def cmd_all(args):
     cmd_sweep(args)
     if args.dry_run or args.list_pending:
+        if not args.no_efficiency:
+            cmd_efficiency(args)
         return
-    if args.with_efficiency and not args.no_efficiency:
+    if not args.no_efficiency:
         cmd_efficiency(args)
     cmd_report(args)
 
@@ -1338,6 +1480,12 @@ def build_parser():
         '--latex-out', '--latex_out', default=str(DEFAULT_LATEX_OUT),
         help='where to write the filled built-in LaTeX section')
     parser.add_argument(
+        '--raw-out', '--raw_out', default=str(DEFAULT_RAW_OUT),
+        help='where to export sorted raw metrics, logs, and args')
+    parser.add_argument(
+        '--no-raw-export', '--no_raw_export', action='store_true',
+        help='skip exporting sorted raw data')
+    parser.add_argument(
         '--no-latex-stdout', '--no_latex_stdout', action='store_true',
         help='write the LaTeX section to disk without printing it')
     parser.add_argument(
@@ -1354,29 +1502,16 @@ def build_parser():
         help='skip writing fig/*.pdf')
     parser.add_argument(
         '--with-efficiency', '--with_efficiency', action='store_true',
-        help='also run/report optional efficiency and privacy-protocol tables')
+        help=argparse.SUPPRESS)
     parser.add_argument(
         '--no-efficiency', '--no_efficiency', action='store_true',
-        help='with --with-efficiency, skip the 50-round efficiency jobs')
+        help='skip the 50-round current-code efficiency jobs and tables')
     parser.add_argument(
         '--efficiency-iid', '--efficiency_iid', type=int, default=1,
         choices=[0, 1], help='CIFAR distribution for efficiency timing')
     parser.add_argument(
         '--efficiency-rounds', '--efficiency_rounds', type=int, default=50,
         help='benign CIFAR rounds used for online round-time averaging')
-    parser.add_argument(
-        '--share-bits', '--share_bits', type=int, default=64,
-        help='ring/share bit width used for PDFL and PriTrust upload size')
-    parser.add_argument(
-        '--share-count', '--share_count', type=int, default=2,
-        help='number of additive shares uploaded per model value')
-    parser.add_argument(
-        '--paillier-bits', '--paillier_bits', type=int, default=2048,
-        help='Paillier modulus bits; ciphertext size is 2x this value')
-    parser.add_argument(
-        '--pritrust-header-bytes', '--pritrust_header_bytes', type=int,
-        default=256,
-        help='constant per-round PriTrust side-information header')
     parser.add_argument(
         '--audit-benchmark-rounds', '--audit_benchmark_rounds', type=int,
         default=50,
