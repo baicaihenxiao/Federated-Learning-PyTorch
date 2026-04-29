@@ -15,11 +15,11 @@ artifacts from the saved pickles/logs:
 
 Typical server usage from the repo root:
 
-    python3 scripts/run_experiments.py all --gpus 0 1 --tasks-per-gpu 2
+    python3 scripts/run_experiments.py all --gpus 0 1
 
 Useful split workflow:
 
-    python3 scripts/run_experiments.py sweep --gpus 0 1 --tasks-per-gpu 2
+    python3 scripts/run_experiments.py sweep --gpus 0 1
     python3 scripts/run_experiments.py report
 
 The default pipeline runs one seed and the repo's plaintext training/defense
@@ -28,14 +28,14 @@ not from homomorphic encryption or secret-sharing protocol costs.
 
 The runner is resumable: before dispatching a config, it scans
 ``save/objects/*.pkl`` and skips matching completed runs.
+By default each GPU runs at most 3 experiments concurrently, with at most
+2 CIFAR-10 experiments among those 3.
 """
 
 import argparse
 import csv
 import json
-import multiprocessing as mp
 import pickle
-import queue
 import re
 import shutil
 import statistics
@@ -557,14 +557,20 @@ def pending_configs(configs, runs):
     return [cfg for cfg in configs if config_key(cfg) not in runs]
 
 
-def dispatch_configs(configs, gpus, tasks_per_gpu=1, dry_run=False,
-                     list_pending=False):
+def dispatch_configs(configs, gpus, tasks_per_gpu=3, max_cifar_per_gpu=2,
+                     dry_run=False, list_pending=False):
     runs = load_runs()
     pending = pending_configs(configs, runs)
+    tasks_per_gpu = max(1, int(tasks_per_gpu))
+    max_cifar_per_gpu = max(1, min(int(max_cifar_per_gpu), tasks_per_gpu))
 
     print(f'Total configs:    {len(configs)}')
     print(f'Already complete: {len(configs) - len(pending)}')
     print(f'Pending:          {len(pending)}')
+    print(
+        f'Concurrency:      {len(gpus)} GPU(s) x {tasks_per_gpu} task(s), '
+        f'max CIFAR per GPU: {max_cifar_per_gpu}'
+    )
     print()
 
     if dry_run or list_pending:
@@ -576,55 +582,110 @@ def dispatch_configs(configs, gpus, tasks_per_gpu=1, dry_run=False,
         print('All requested configs are already complete.')
         return
 
-    job_queue = mp.Queue()
-    for idx, cfg in enumerate(pending, start=1):
-        job_queue.put((idx, len(pending), cfg))
+    SWEEP_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    jobs = [(idx, len(pending), cfg)
+            for idx, cfg in enumerate(pending, start=1)]
+    active = []
 
-    worker_slots = [
-        (gpu, slot)
-        for gpu in gpus
-        for slot in range(max(1, int(tasks_per_gpu)))
-    ]
-    workers = [
-        mp.Process(
-            target=gpu_worker,
-            args=(gpu, slot, job_queue, SWEEP_LOG_DIR),
-        )
-        for gpu, slot in worker_slots
-    ]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join()
+    while jobs or active:
+        launched = False
+        for gpu_id in gpus:
+            while _gpu_active_count(active, gpu_id) < tasks_per_gpu:
+                job_pos = _select_job_for_gpu(
+                    jobs, active, gpu_id, max_cifar_per_gpu)
+                if job_pos is None:
+                    break
+                idx, total, cfg = jobs.pop(job_pos)
+                active.append(_launch_job(
+                    idx, total, cfg, gpu_id,
+                    _next_gpu_slot(active, gpu_id, tasks_per_gpu)))
+                launched = True
+
+        completed = _reap_completed(active)
+        if jobs and not active and not launched and not completed:
+            raise RuntimeError(
+                'No launchable jobs remain. Check --max-cifar-per-gpu and '
+                '--tasks-per-gpu settings.')
+        if not completed and not launched:
+            time.sleep(2.0)
 
 
-def gpu_worker(gpu_id, worker_slot, job_queue, log_dir):
-    log_dir.mkdir(parents=True, exist_ok=True)
-    while True:
-        try:
-            idx, total, cfg = job_queue.get_nowait()
-        except queue.Empty:
-            return
+def _gpu_active_count(active, gpu_id):
+    return sum(1 for job in active if job['gpu'] == gpu_id)
 
-        tag = (
-            f'{cfg["dataset"]}_iid{cfg["iid"]}_{cfg["defense"]}_'
-            f'{cfg["attack"]}_mr{cfg["malicious_ratio"]}_'
-            f'ep{cfg["epochs"]}_s{cfg["seed"]}'
-        )
-        log_path = log_dir / f'{tag}.gpu{gpu_id}.slot{worker_slot}.log'
-        cmd = build_command(cfg, gpu_id=gpu_id)
-        start = time.time()
-        worker_name = f'gpu{gpu_id}:{worker_slot}'
-        print(f'[{worker_name}] [{idx:4d}/{total}] start {tag}', flush=True)
-        with open(log_path, 'w') as output:
-            proc = subprocess.run(cmd, stdout=output, stderr=subprocess.STDOUT)
-        elapsed = time.time() - start
-        status = 'OK' if proc.returncode == 0 else f'FAIL({proc.returncode})'
+
+def _gpu_active_cifar_count(active, gpu_id):
+    return sum(
+        1 for job in active
+        if job['gpu'] == gpu_id and job['cfg']['dataset'] == 'cifar'
+    )
+
+
+def _next_gpu_slot(active, gpu_id, tasks_per_gpu):
+    used = {
+        int(job['slot'])
+        for job in active
+        if job['gpu'] == gpu_id
+    }
+    for slot in range(tasks_per_gpu):
+        if slot not in used:
+            return slot
+    return tasks_per_gpu - 1
+
+
+def _select_job_for_gpu(jobs, active, gpu_id, max_cifar_per_gpu):
+    cifar_active = _gpu_active_cifar_count(active, gpu_id)
+    for position, (_, _, cfg) in enumerate(jobs):
+        if cfg['dataset'] == 'cifar' and cifar_active >= max_cifar_per_gpu:
+            continue
+        return position
+    return None
+
+
+def _launch_job(idx, total, cfg, gpu_id, worker_slot):
+    tag = (
+        f'{cfg["dataset"]}_iid{cfg["iid"]}_{cfg["defense"]}_'
+        f'{cfg["attack"]}_mr{cfg["malicious_ratio"]}_'
+        f'ep{cfg["epochs"]}_s{cfg["seed"]}'
+    )
+    log_path = SWEEP_LOG_DIR / f'{tag}.gpu{gpu_id}.slot{worker_slot}.log'
+    cmd = build_command(cfg, gpu_id=gpu_id)
+    output = open(log_path, 'w')
+    start = time.time()
+    worker_name = f'gpu{gpu_id}:{worker_slot}'
+    print(f'[{worker_name}] [{idx:4d}/{total}] start {tag}', flush=True)
+    proc = subprocess.Popen(cmd, stdout=output, stderr=subprocess.STDOUT)
+    return {
+        'proc': proc,
+        'output': output,
+        'cfg': cfg,
+        'gpu': gpu_id,
+        'slot': worker_slot,
+        'idx': idx,
+        'total': total,
+        'tag': tag,
+        'start': start,
+        'worker_name': worker_name,
+    }
+
+
+def _reap_completed(active):
+    completed = False
+    for job in list(active):
+        returncode = job['proc'].poll()
+        if returncode is None:
+            continue
+        job['output'].close()
+        active.remove(job)
+        elapsed = time.time() - job['start']
+        status = 'OK' if returncode == 0 else f'FAIL({returncode})'
         print(
-            f'[{worker_name}] [{idx:4d}/{total}] {status} '
-            f'{elapsed:8.1f}s {tag}',
+            f'[{job["worker_name"]}] [{job["idx"]:4d}/{job["total"]}] '
+            f'{status} {elapsed:8.1f}s {job["tag"]}',
             flush=True,
         )
+        completed = True
+    return completed
 
 
 def metric_values(runs, cfg_template, metric, seeds, allow_partial=False):
@@ -1359,6 +1420,7 @@ def cmd_sweep(args):
         args.seeds, args.methods, args.only, args.attacks, args.test_interval)
     dispatch_configs(
         configs, args.gpus, args.tasks_per_gpu,
+        args.max_cifar_per_gpu,
         args.dry_run, args.list_pending)
 
 
@@ -1368,6 +1430,7 @@ def cmd_efficiency(args):
         args.efficiency_rounds, test_interval=0)
     dispatch_configs(
         configs, args.gpus, args.tasks_per_gpu,
+        args.max_cifar_per_gpu,
         args.dry_run, args.list_pending)
 
 
@@ -1450,8 +1513,11 @@ def build_parser():
         '--gpus', type=int, nargs='+', default=[0],
         help='GPU ids to use')
     parser.add_argument(
-        '--tasks-per-gpu', '--tasks_per_gpu', type=int, default=1,
-        help='concurrent worker processes to launch per GPU')
+        '--tasks-per-gpu', '--tasks_per_gpu', type=int, default=3,
+        help='maximum concurrent experiments to launch per GPU')
+    parser.add_argument(
+        '--max-cifar-per-gpu', '--max_cifar_per_gpu', type=int, default=2,
+        help='maximum concurrent CIFAR-10 experiments per GPU')
     parser.add_argument(
         '--seeds', type=int, nargs='+', default=SEEDS,
         help='random seeds to run and average; default: 1')
@@ -1534,6 +1600,12 @@ def main():
     args = parser.parse_args()
     args.methods = [normalize_method(method) for method in args.methods]
     args.seeds = [int(seed) for seed in args.seeds]
+    if args.tasks_per_gpu < 1:
+        parser.error('--tasks-per-gpu must be at least 1')
+    if args.max_cifar_per_gpu < 1:
+        parser.error('--max-cifar-per-gpu must be at least 1')
+    if args.max_cifar_per_gpu > args.tasks_per_gpu:
+        args.max_cifar_per_gpu = args.tasks_per_gpu
 
     if args.mode == 'sweep':
         cmd_sweep(args)
