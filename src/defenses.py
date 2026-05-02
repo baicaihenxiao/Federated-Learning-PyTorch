@@ -74,7 +74,8 @@ def aggregate_weights(args, global_weights, local_weights, sample_counts,
     if defense == TRIMMED_MEAN:
         return _trimmed_mean(args, local_weights, sample_counts)
     if defense == SHIELDFL:
-        return _shieldfl(args, global_weights, local_weights, sample_counts)
+        return _shieldfl(args, global_weights, local_weights, sample_counts,
+                         client_ids, state)
     if defense == PDFL:
         return _pdfl(args, global_weights, local_weights, sample_counts,
                      client_ids)
@@ -133,6 +134,62 @@ def _safe_normalize(vectors, eps=1e-12):
 def _cosine_matrix(vectors):
     normalized, norms = _safe_normalize(vectors)
     return normalized.matmul(normalized.t()).clamp(min=-1.0, max=1.0), norms
+
+
+def _plaintext_normalized_deltas(local_weights, global_weights, keys):
+    """Adapt the papers' normalized-gradient inputs to local model states."""
+    vectors = _delta_matrix(local_weights, global_weights, keys)
+    normalized, norms = _safe_normalize(vectors)
+    accepted = [
+        int(position)
+        for position in torch.nonzero(norms > 0.0, as_tuple=False)
+        .view(-1).tolist()
+    ]
+    return vectors, normalized, norms, accepted
+
+
+def _median_norm(norms, positions):
+    selected_norms = torch.tensor(
+        [float(norms[position].item()) for position in positions],
+        dtype=torch.float32)
+    return float(torch.median(selected_norms).item())
+
+
+def _normalized_delta_update(global_weights, local_weights, keys, positions,
+                             coefficients, normalized_vectors, norms):
+    """Apply a robust normalized update direction at a median raw-delta scale."""
+    if len(positions) != len(coefficients):
+        raise ValueError('coefficients must match positions')
+    total = float(sum(coefficients))
+    if total <= 0:
+        raise ValueError('coefficients must sum to a positive value')
+
+    normalized_coefficients = torch.tensor(
+        [float(coefficient) / total for coefficient in coefficients],
+        dtype=normalized_vectors.dtype)
+    aggregate_direction = torch.sum(
+        normalized_vectors[positions] * normalized_coefficients.view(-1, 1),
+        dim=0)
+    aggregate_scale = _median_norm(norms, positions)
+    aggregate_delta = aggregate_direction * aggregate_scale
+
+    result = copy.deepcopy(global_weights)
+    max_position = positions[
+        max(range(len(coefficients)),
+            key=lambda idx: float(coefficients[idx]))]
+    offset = 0
+    for key, global_value in global_weights.items():
+        if torch.is_floating_point(global_value):
+            size = global_value.numel()
+            delta = aggregate_delta[offset:offset + size].view_as(
+                global_value)
+            result[key] = global_value.clone() + delta.to(
+                device=global_value.device, dtype=global_value.dtype)
+            offset += size
+        else:
+            result[key] = local_weights[max_position][key].clone()
+
+    return result, aggregate_direction.detach().clone(), aggregate_scale
 
 
 def _weighted_average_state(local_weights, coefficients):
@@ -246,14 +303,8 @@ def _trimmed_mean(args, local_weights, sample_counts):
     return result, info
 
 
-def _cosine_centrality(similarities):
-    if similarities.size(0) == 1:
-        return torch.ones(1, dtype=similarities.dtype)
-    return (similarities.sum(dim=1) - torch.diag(similarities)) / (
-        similarities.size(0) - 1)
-
-
-def _shieldfl(args, global_weights, local_weights, sample_counts):
+def _shieldfl(args, global_weights, local_weights, sample_counts,
+              client_ids, state):
     keys = _floating_keys(global_weights)
     if not keys:
         return average_weights(local_weights, sample_counts), {
@@ -262,29 +313,77 @@ def _shieldfl(args, global_weights, local_weights, sample_counts):
             'fallback': 'no floating parameters',
         }
 
-    vectors = _delta_matrix(local_weights, global_weights, keys)
-    similarities, _ = _cosine_matrix(vectors)
-    threshold = float(getattr(args, 'shieldfl_similarity_threshold', 0.0))
-    centrality = _cosine_centrality(similarities)
-    trust = torch.clamp(centrality - threshold, min=0.0)
-
-    coefficients = [
-        float(sample_count) * float(score)
-        for sample_count, score in zip(sample_counts, trust)
-    ]
-    if sum(coefficients) <= 0:
+    _, normalized, norms, accepted = _plaintext_normalized_deltas(
+        local_weights, global_weights, keys)
+    if not accepted:
         return average_weights(local_weights, sample_counts), {
             'defense': SHIELDFL,
             'selected_count': len(local_weights),
-            'fallback': 'zero trust scores',
+            'fallback': 'zero update vectors',
         }
 
-    return _weighted_average_state(local_weights, coefficients), {
+    previous = state.get('shieldfl_previous_aggregate')
+    if previous is None or previous.numel() != normalized.size(1):
+        coefficients = [1.0 for _ in accepted]
+        aggregated, aggregate_direction, aggregate_scale = (
+            _normalized_delta_update(global_weights, local_weights, keys,
+                                     accepted, coefficients, normalized,
+                                     norms))
+        state['shieldfl_previous_aggregate'] = aggregate_direction
+        return aggregated, {
+            'defense': SHIELDFL,
+            'selected_count': len(accepted),
+            'selected_clients': [int(client_ids[position])
+                                 for position in accepted],
+            'rejected_count': len(local_weights) - len(accepted),
+            'aggregation_scale': aggregate_scale,
+            'initial_round': True,
+        }
+
+    previous_normalized, previous_norms = _safe_normalize(previous.view(1, -1))
+    if float(previous_norms[0].item()) <= 0.0:
+        coefficients = [1.0 for _ in accepted]
+        baseline_position = accepted[0]
+        fallback = 'zero previous aggregate'
+    else:
+        previous_vector = previous_normalized[0]
+        previous_similarities = normalized.matmul(previous_vector).clamp(
+            min=-1.0, max=1.0)
+        baseline_position = min(
+            accepted,
+            key=lambda position: float(previous_similarities[position].item()))
+        baseline_similarities = normalized.matmul(
+            normalized[baseline_position]).clamp(min=-1.0, max=1.0)
+        coefficients = [
+            max(1.0 - float(baseline_similarities[position].item()), 0.0)
+            for position in accepted
+        ]
+        fallback = None
+
+    if sum(coefficients) <= 0.0:
+        coefficients = [1.0 for _ in accepted]
+        if fallback is None:
+            fallback = 'zero confidence mass'
+
+    aggregated, aggregate_direction, aggregate_scale = (
+        _normalized_delta_update(global_weights, local_weights, keys,
+                                 accepted, coefficients, normalized, norms))
+    state['shieldfl_previous_aggregate'] = aggregate_direction
+
+    info = {
         'defense': SHIELDFL,
-        'selected_count': len(local_weights),
-        'min_trust': float(torch.min(trust).item()),
-        'max_trust': float(torch.max(trust).item()),
+        'selected_count': len(accepted),
+        'selected_clients': [int(client_ids[position])
+                             for position in accepted],
+        'rejected_count': len(local_weights) - len(accepted),
+        'poisonous_baseline_client': int(client_ids[baseline_position]),
+        'min_confidence': min(coefficients),
+        'max_confidence': max(coefficients),
+        'aggregation_scale': aggregate_scale,
     }
+    if fallback is not None:
+        info['fallback'] = fallback
+    return aggregated, info
 
 
 def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
@@ -296,30 +395,56 @@ def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
             'fallback': 'no floating parameters',
         }
 
-    vectors = _delta_matrix(local_weights, global_weights, keys)
-    similarities, _ = _cosine_matrix(vectors)
+    _, normalized, norms, accepted = _plaintext_normalized_deltas(
+        local_weights, global_weights, keys)
+    if not accepted:
+        return average_weights(local_weights, sample_counts), {
+            'defense': PDFL,
+            'selected_count': len(local_weights),
+            'fallback': 'zero update vectors',
+        }
+
+    similarities = normalized.matmul(normalized.t()).clamp(
+        min=-1.0, max=1.0)
     threshold = float(getattr(args, 'pdfl_similarity_threshold', 0.0))
     cluster = _largest_similarity_component(
-        similarities, sample_counts, threshold)
+        similarities, accepted, threshold)
 
-    selected_weights = _subset(local_weights, cluster)
-    selected_counts = _subset(sample_counts, cluster)
     selected_clients = _subset(client_ids, cluster)
-    return average_weights(selected_weights, selected_counts), {
+    similarity_weights = [
+        float(torch.mean(similarities[position, cluster]).item())
+        for position in cluster
+    ]
+    fallback = None
+    if sum(similarity_weights) <= 0.0:
+        similarity_weights = [1.0 for _ in cluster]
+        fallback = 'zero similarity weight mass'
+
+    aggregated, _, aggregate_scale = _normalized_delta_update(
+        global_weights, local_weights, keys, cluster, similarity_weights,
+        normalized, norms)
+    info = {
         'defense': PDFL,
         'selected_count': len(cluster),
         'selected_clients': [int(client_id) for client_id in selected_clients],
         'similarity_threshold': threshold,
+        'rejected_count': len(local_weights) - len(accepted),
+        'min_similarity_weight': min(similarity_weights),
+        'max_similarity_weight': max(similarity_weights),
+        'aggregation_scale': aggregate_scale,
     }
+    if fallback is not None:
+        info['fallback'] = fallback
+    return aggregated, info
 
 
-def _largest_similarity_component(similarities, sample_counts, threshold):
-    num_clients = similarities.size(0)
-    visited = [False] * num_clients
+def _largest_similarity_component(similarities, positions, threshold):
+    position_set = set(int(position) for position in positions)
+    visited = {position: False for position in position_set}
     best_component = []
     best_score = None
 
-    for start in range(num_clients):
+    for start in sorted(position_set):
         if visited[start]:
             continue
         stack = [start]
@@ -332,14 +457,14 @@ def _largest_similarity_component(similarities, sample_counts, threshold):
                 similarities[current] >= threshold,
                 as_tuple=False).view(-1).tolist()
             for neighbor in neighbors:
-                if not visited[neighbor]:
+                neighbor = int(neighbor)
+                if neighbor in position_set and not visited[neighbor]:
                     visited[neighbor] = True
-                    stack.append(int(neighbor))
+                    stack.append(neighbor)
 
-        sample_weight = sum(float(sample_counts[idx]) for idx in component)
         internal_similarity = _mean_internal_similarity(
             similarities, component)
-        score = (sample_weight, internal_similarity, len(component))
+        score = (len(component), internal_similarity)
         if best_score is None or score > best_score:
             best_score = score
             best_component = component

@@ -47,7 +47,9 @@ default undefended baseline. Krum and Trimmed Mean implement classical robust
 aggregation. `shieldfl`, `pdfl`, and `pritrust_fl` implement only the plaintext
 defense logic for those methods; their homomorphic-encryption,
 secret-sharing, differential-privacy, or other privacy-preserving protocols are
-not included. The plaintext PriTrust-FL implementation uses post-submission
+not included. For `shieldfl` and `pdfl`, local model-state deltas are normalized
+as plaintext gradient surrogates before the paper-specific cosine defense steps.
+The plaintext PriTrust-FL implementation uses post-submission
 stochastic audited layer selection, temporal and spatial anchors, binary
 consistency indicators, adaptive filtering, historical trust update, and
 trust-weighted aggregation.
@@ -153,8 +155,8 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--defense:```  Federated aggregation defense. Options: `fedavg`, `krum`, `trimmed_mean`, `shieldfl`, `pdfl`, `pritrust_fl`. Default: `fedavg`.
 * ```--defense_byzantine_clients:``` Assumed number of Byzantine clients selected per round for Krum and Trimmed Mean. Defaults to the count inferred from `--malicious_ratio`.
 * ```--trimmed_mean_trim_ratio:``` Fraction of selected clients trimmed from each coordinate tail for Trimmed Mean. Defaults to the count inferred from `--malicious_ratio`.
-* ```--shieldfl_similarity_threshold:``` Mean cosine-similarity threshold for plaintext ShieldFL trust weights. Default: `0.0`.
-* ```--pdfl_similarity_threshold:``` Cosine-similarity threshold for plaintext PDFL clustering. Default: `0.0`.
+* ```--shieldfl_similarity_threshold:``` Legacy option kept for run-name compatibility. Plaintext ShieldFL follows the paper's previous-round poisonous-baseline confidence rule. Default: `0.0`.
+* ```--pdfl_similarity_threshold:``` Cosine-similarity threshold for plaintext PDFL SecClu-style clustering. Default: `0.0`.
 * ```--pritrust_audit_layers:``` Number of stochastic audited layers for PriTrust-FL. Default: omitted, which uses `ceil(0.5L)`.
 * ```--pritrust_alpha_min:``` Lower amplitude-band coefficient for PriTrust-FL. Default: `0.5`.
 * ```--pritrust_alpha_max:``` Upper amplitude-band coefficient for PriTrust-FL. Default: `1.5`.

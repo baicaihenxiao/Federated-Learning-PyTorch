@@ -239,11 +239,12 @@ def args_parser(experiment=None):
                         '--malicious_ratio')
     parser.add_argument('--shieldfl_similarity_threshold', type=float,
                         default=0.0,
-                        help='minimum mean cosine similarity used as plaintext '
-                        'ShieldFL trust mass')
+                        help='legacy option kept for run-name compatibility; '
+                        'plaintext ShieldFL follows the paper baseline '
+                        'confidence rule')
     parser.add_argument('--pdfl_similarity_threshold', type=float, default=0.0,
                         help='cosine-similarity threshold for plaintext PDFL '
-                        'client clustering')
+                        'SecClu-style client clustering')
     parser.add_argument('--pritrust_audit_layers', type=int, default=None,
                         help='number of stochastic audited layers K_t for '
                         'PriTrust-FL; default uses ceil(0.5L)')
