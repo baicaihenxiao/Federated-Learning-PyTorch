@@ -246,12 +246,14 @@ def args_parser(experiment=None):
                         help='cosine-similarity threshold for plaintext PDFL '
                         'SecClu-style client clustering')
     parser.add_argument('--pritrust_audit_layers', type=int, default=None,
-                        help='number of stochastic audited layers K_t for '
-                        'PriTrust-FL; default uses ceil(0.5L)')
-    parser.add_argument('--pritrust_alpha_min', type=float, default=0.5,
-                        help='PriTrust-FL lower amplitude-band coefficient')
-    parser.add_argument('--pritrust_alpha_max', type=float, default=1.5,
-                        help='PriTrust-FL upper amplitude-band coefficient')
+                        help='number of audited layers K_t for PriTrust-FL; '
+                        'default uses ceil(0.5L) and is lower-bounded by '
+                        'the sentinel layer count')
+    parser.add_argument('--pritrust_c_norm', type=float, default=2.0,
+                        help='PriTrust-FL median-norm prefilter coefficient')
+    parser.add_argument('--pritrust_zeta', type=float, default=0.0,
+                        help='PriTrust-FL audited-layer norm violation '
+                        'tolerance')
     parser.add_argument('--pritrust_theta_tem', type=float, default=1.5,
                         help='PriTrust-FL temporal distance threshold '
                         'coefficient')
@@ -260,6 +262,9 @@ def args_parser(experiment=None):
                         'coefficient')
     parser.add_argument('--pritrust_gamma', type=float, default=1.5,
                         help='PriTrust-FL adaptive filtering coefficient')
+    parser.add_argument('--pritrust_r_max', type=float, default=0.3,
+                        help='PriTrust-FL malicious-ratio upper bound for '
+                        'top-R fallback filtering')
     parser.add_argument('--pritrust_rho', type=float, default=0.8,
                         help='PriTrust-FL historical trust memory factor')
     parser.add_argument('--pritrust_kappa', type=float, default=0.5,
@@ -268,6 +273,12 @@ def args_parser(experiment=None):
     parser.add_argument('--pritrust_security_bits', type=int, default=128,
                         help='security-bit value mixed into the plaintext '
                         'stochastic audit seed')
+    parser.add_argument('--pritrust_alpha_min', type=float,
+                        default=argparse.SUPPRESS,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--pritrust_alpha_max', type=float,
+                        default=argparse.SUPPRESS,
+                        help=argparse.SUPPRESS)
 
     # attack arguments
     parser.add_argument('--attack', type=str.lower, default=NO_ATTACK,
@@ -338,17 +349,18 @@ def args_parser(experiment=None):
     if (args.pritrust_audit_layers is not None and
             args.pritrust_audit_layers < 1):
         parser.error('--pritrust_audit_layers must be at least 1 when set')
-    if args.pritrust_alpha_min < 0:
-        parser.error('--pritrust_alpha_min must be greater than or equal to 0')
-    if args.pritrust_alpha_max < args.pritrust_alpha_min:
-        parser.error('--pritrust_alpha_max must be greater than or equal to '
-                     '--pritrust_alpha_min')
+    if args.pritrust_c_norm <= 0:
+        parser.error('--pritrust_c_norm must be greater than 0')
+    if not 0 <= args.pritrust_zeta <= 1:
+        parser.error('--pritrust_zeta must be between 0 and 1')
     if args.pritrust_theta_tem < 0:
         parser.error('--pritrust_theta_tem must be greater than or equal to 0')
     if args.pritrust_theta_spa < 0:
         parser.error('--pritrust_theta_spa must be greater than or equal to 0')
     if args.pritrust_gamma < 0:
         parser.error('--pritrust_gamma must be greater than or equal to 0')
+    if not 0 <= args.pritrust_r_max < 1:
+        parser.error('--pritrust_r_max must be in [0, 1)')
     if not 0 <= args.pritrust_rho <= 1:
         parser.error('--pritrust_rho must be between 0 and 1')
     if not 0 <= args.pritrust_kappa < 1:

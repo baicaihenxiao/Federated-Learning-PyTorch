@@ -10,7 +10,12 @@ import torch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / 'src'))
 
-from defenses import _pdfl, _shieldfl  # noqa: E402
+from defenses import (  # noqa: E402
+    _pdfl,
+    _pritrust_fl,
+    _select_pritrust_audited_layers,
+    _shieldfl,
+)
 
 
 def _state(values):
@@ -27,6 +32,24 @@ def _assert_close(actual, expected):
 def _assert_float_close(actual, expected):
     if abs(float(actual) - float(expected)) > 1e-6:
         raise AssertionError('expected {}, got {}'.format(expected, actual))
+
+
+def _pritrust_args(**overrides):
+    values = dict(
+        pritrust_audit_layers=1,
+        pritrust_c_norm=2.0,
+        pritrust_zeta=0.0,
+        pritrust_theta_tem=1.5,
+        pritrust_theta_spa=1.5,
+        pritrust_gamma=1.5,
+        pritrust_r_max=0.3,
+        pritrust_rho=0.8,
+        pritrust_kappa=0.5,
+        pritrust_security_bits=128,
+        seed=1,
+    )
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def test_shieldfl_uses_previous_round_poisonous_baseline():
@@ -86,8 +109,81 @@ def test_pdfl_uses_majority_cluster_similarity_weights():
     _assert_float_close(info['max_similarity_weight'], 0.9)
 
 
+def test_pritrust_prefilters_median_norm_outlier_before_aggregation():
+    args = _pritrust_args()
+    global_weights = _state([0.0, 0.0])
+    local_weights = [
+        _state([1.0, 0.0]),
+        _state([1.0, 0.0]),
+        _state([100.0, 0.0]),
+    ]
+    state = {}
+
+    aggregated, info = _pritrust_fl(
+        args, global_weights, local_weights, [1, 1, 1], [0, 1, 2], state)
+
+    _assert_close(aggregated['w'], [1.0, 0.0])
+    assert info['candidate_count'] == 2
+    assert info['norm_prefiltered_count'] == 1
+    assert info['norm_violation_counts'] == [0, 0, 1]
+    assert info['selected_clients'] == [0, 1]
+    _assert_float_close(state['pritrust_client_trust'][2], 0.5)
+
+
+def test_pritrust_zero_mad_uses_top_r_tiebreakers():
+    args = _pritrust_args(pritrust_r_max=0.5)
+    global_weights = _state([0.0, 0.0])
+    local_weights = [
+        _state([1.0, 0.0]),
+        _state([1.0, 0.0]),
+        _state([1.0, 0.0]),
+        _state([1.0, 0.0]),
+    ]
+    state = {
+        'pritrust_client_trust': {
+            0: 0.1,
+            1: 0.9,
+            2: 0.4,
+            3: 0.2,
+        },
+    }
+
+    aggregated, info = _pritrust_fl(
+        args, global_weights, local_weights, [1, 1, 1, 1],
+        [0, 1, 2, 3], state)
+
+    _assert_close(aggregated['w'], [1.0, 0.0])
+    assert info['filter_mode'] == 'top_r_zero_mad'
+    assert info['selected_clients'] == [1, 2]
+    _assert_float_close(state['pritrust_client_trust'][0], 0.05)
+    _assert_float_close(state['pritrust_client_trust'][1], 0.92)
+    _assert_float_close(state['pritrust_client_trust'][2], 0.52)
+    _assert_float_close(state['pritrust_client_trust'][3], 0.1)
+
+
+def test_pritrust_audit_selection_keeps_sentinel_tensors():
+    args = _pritrust_args(pritrust_audit_layers=3)
+    keys = [
+        'conv1.weight',
+        'layer1.0.conv1.weight',
+        'layer2.0.conv1.weight',
+        'linear.weight',
+        'linear.bias',
+    ]
+
+    audited = _select_pritrust_audited_layers(args, keys, [4, 2, 9], 1)
+
+    assert 'conv1.weight' in audited
+    assert 'linear.weight' in audited
+    assert 'linear.bias' in audited
+    assert len(audited) == 3
+
+
 if __name__ == '__main__':
     test_shieldfl_uses_previous_round_poisonous_baseline()
     test_shieldfl_removes_raw_update_magnitude_from_confidence()
     test_pdfl_uses_majority_cluster_similarity_weights()
+    test_pritrust_prefilters_median_norm_outlier_before_aggregation()
+    test_pritrust_zero_mad_uses_top_r_tiebreakers()
+    test_pritrust_audit_selection_keeps_sentinel_tensors()
     print('plaintext defense checks passed')

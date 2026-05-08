@@ -89,9 +89,10 @@ def get_federated_run_name(args):
          'lr', 'defense', 'defense_byzantine_clients',
          'trimmed_mean_trim_ratio', 'shieldfl_similarity_threshold',
          'pdfl_similarity_threshold', 'pritrust_audit_layers',
-         'pritrust_alpha_min', 'pritrust_alpha_max',
+         'pritrust_c_norm', 'pritrust_zeta',
          'pritrust_theta_tem', 'pritrust_theta_spa', 'pritrust_gamma',
-         'pritrust_rho', 'pritrust_kappa', 'pritrust_security_bits',
+         'pritrust_r_max', 'pritrust_rho', 'pritrust_kappa',
+         'pritrust_security_bits',
          'attack', 'malicious_ratio', 'test_interval'],
     )
 
