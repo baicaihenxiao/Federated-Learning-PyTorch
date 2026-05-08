@@ -78,6 +78,7 @@ METHODS = [
     'pritrust_fl',
 ]
 EFFICIENCY_METHODS = ['shieldfl', 'pdfl', 'pritrust_fl']
+UPDATED_DEFENSE_METHODS = ['shieldfl', 'pdfl', 'pritrust_fl']
 METHOD_LABELS = {
     'fedavg': 'FedAvg',
     'krum': 'Krum',
@@ -127,6 +128,9 @@ DEFENSE_LINE_PATTERNS = {
     'pritrust_fl': re.compile(r'\\textbf\{PriTrust-FL\}|(^|&\s*)PriTrust-FL\b'),
 }
 XX_RE = re.compile(r'XX\.XX')
+TABLE_VALUE_RE = re.compile(
+    r'(\\textbf\{)?(?:XX\.XX|N/A|-?[0-9]+(?:\.[0-9]+)?)(\})?'
+)
 ROUND_TIME_RE = re.compile(r'Round Time:\s*([0-9]+):([0-9]{2}):([0-9]{2})')
 
 ROBUSTNESS_LATEX_TEMPLATE = r"""\subsection{Robustness Against Untargeted Attacks}\label{subsec:exp_untargeted}
@@ -300,7 +304,7 @@ PDFL        & XX.XX MB \\
 
 \subsubsection{Server-Side Audit Time per Round}
 
-Table~\ref{tab:audit_time} reports the average server-side audit time per round. The audit phase covers similarity scoring for the cosine-based baselines and indicator computation plus trust update for PriTrust-FL. PriTrust-FL audit time grows with the audit budget $K_t$, but remains far below the cost of homomorphic operations in ShieldFL.
+Table~\ref{tab:audit_time} reports the average server-side audit time per round. The audit phase covers similarity scoring for the cosine-based baselines and median-norm pre-filtering, indicator computation, and trust update for PriTrust-FL. PriTrust-FL audit time grows with the audit budget $K_t$, but remains far below the cost of homomorphic operations in ShieldFL.
 
 \begin{table}[!t]
 \centering
@@ -320,7 +324,7 @@ PDFL        & XX.XX s \\
 
 \subsubsection{End-to-End Online Round Time}
 
-Table~\ref{tab:e2e_time} reports the end-to-end online round time, which includes local training on each selected client, secret-share exchange, server-side audit, and aggregation. The values exclude offline Beaver triple preprocessing. PriTrust-FL achieves an end-to-end round time comparable to PDFL and substantially lower than ShieldFL. The audit overhead introduced by the dual-anchor design is offset by the efficiency of the underlying secret-sharing protocols.
+Table~\ref{tab:e2e_time} reports the end-to-end online round time, which includes local training on each selected client, secret-share exchange, server-side audit, and aggregation. The values exclude offline Beaver triple preprocessing. PriTrust-FL achieves an end-to-end round time comparable to PDFL and substantially lower than ShieldFL. The audit overhead introduced by median-norm pre-filtering and the dual-anchor design is offset by the efficiency of the underlying secret-sharing protocols.
 
 \begin{table}[!t]
 \centering
@@ -553,15 +557,27 @@ def load_runs():
     return runs
 
 
-def pending_configs(configs, runs):
-    return [cfg for cfg in configs if config_key(cfg) not in runs]
+def should_force_rerun(cfg, force_methods):
+    return normalize_method(cfg['defense']) in set(force_methods or [])
+
+
+def pending_configs(configs, runs, force_methods=None):
+    return [
+        cfg for cfg in configs
+        if config_key(cfg) not in runs or should_force_rerun(
+            cfg, force_methods)
+    ]
 
 
 def dispatch_configs(configs, gpus, tasks_per_gpu=3, max_cifar_per_gpu=2,
                      mnist_only_tasks_per_gpu=5, dry_run=False,
-                     list_pending=False):
+                     list_pending=False, force_methods=None):
     runs = load_runs()
-    pending = pending_configs(configs, runs)
+    pending = pending_configs(configs, runs, force_methods)
+    forced = [
+        cfg for cfg in configs
+        if config_key(cfg) in runs and should_force_rerun(cfg, force_methods)
+    ]
     tasks_per_gpu = max(1, int(tasks_per_gpu))
     max_cifar_per_gpu = max(1, min(int(max_cifar_per_gpu), tasks_per_gpu))
     mnist_only_tasks_per_gpu = max(
@@ -570,6 +586,9 @@ def dispatch_configs(configs, gpus, tasks_per_gpu=3, max_cifar_per_gpu=2,
     print(f'Total configs:    {len(configs)}')
     print(f'Already complete: {len(configs) - len(pending)}')
     print(f'Pending:          {len(pending)}')
+    if force_methods:
+        methods = ', '.join(METHOD_LABELS[method] for method in force_methods)
+        print(f'Forced rerun:     {len(forced)} ({methods})')
     print(
         f'Concurrency:      {len(gpus)} GPU(s) x {tasks_per_gpu} task(s), '
         f'max CIFAR per GPU: {max_cifar_per_gpu}, '
@@ -1407,6 +1426,42 @@ def replace_xx_sequence(line, values):
     return out
 
 
+def method_in_cell(method, cell):
+    if method == 'pritrust_fl':
+        return 'PriTrust-FL' in cell
+    return METHOD_LABELS[method] in cell
+
+
+def replace_table_cell_value(cell, value):
+    def replacement(match):
+        return '{}{}{}'.format(
+            match.group(1) or '',
+            value,
+            match.group(2) or '',
+        )
+
+    updated, replacements = TABLE_VALUE_RE.subn(replacement, cell, count=1)
+    return updated if replacements else cell
+
+
+def replace_table_values(line, method, values):
+    parts = line.split('&')
+    method_index = None
+    for index, cell in enumerate(parts):
+        if method_in_cell(method, cell):
+            method_index = index
+            break
+    if method_index is None:
+        return replace_xx_sequence(line, values)
+
+    for offset, value in enumerate(values, start=1):
+        value_index = method_index + offset
+        if value_index >= len(parts):
+            break
+        parts[value_index] = replace_table_cell_value(parts[value_index], value)
+    return '&'.join(parts)
+
+
 def slice_table(text, label):
     label_re = re.compile(r'\\label\{tab:' + re.escape(label) + r'\}')
     match = label_re.search(text)
@@ -1428,14 +1483,14 @@ def fill_clean_baseline(text, runs, seeds, allow_partial):
     lines = []
     for line in block.splitlines(keepends=True):
         method = detect_defense(line)
-        if method and 'XX.XX' in line:
+        if method:
             cells = []
             for dataset in ['mnist', 'cifar']:
                 for iid in [1, 0]:
                     cells.append(lookup_percent(
                         runs, dataset, iid, method, 'none', 0.0, 'mta',
                         seeds, allow_partial))
-            line = replace_xx_sequence(line, cells)
+            line = replace_table_values(line, method, cells)
         lines.append(line)
     return text[:start] + ''.join(lines) + text[end:]
 
@@ -1448,7 +1503,7 @@ def fill_untargeted_30(text, runs, seeds, allow_partial):
     lines = []
     for line in block.splitlines(keepends=True):
         method = detect_defense(line)
-        if method and 'XX.XX' in line:
+        if method:
             cells = []
             for dataset in ['mnist', 'cifar']:
                 for attack in ['sign_flip', 'min_max']:
@@ -1456,7 +1511,7 @@ def fill_untargeted_30(text, runs, seeds, allow_partial):
                         cells.append(lookup_percent(
                             runs, dataset, iid, method, attack, 0.3, 'mta',
                             seeds, allow_partial))
-            line = replace_xx_sequence(line, cells)
+            line = replace_table_values(line, method, cells)
         lines.append(line)
     return text[:start] + ''.join(lines) + text[end:]
 
@@ -1474,7 +1529,7 @@ def fill_targeted_30(text, runs, seeds, allow_partial):
         if match:
             current_iid = 1 if match.group(1) == 'IID' else 0
         method = detect_defense(line)
-        if method and 'XX.XX' in line and current_iid is not None:
+        if method and current_iid is not None:
             cells = []
             for dataset in ['mnist', 'cifar']:
                 for attack in ['label_flip', 'backdoor']:
@@ -1484,7 +1539,7 @@ def fill_targeted_30(text, runs, seeds, allow_partial):
                     cells.append(lookup_percent(
                         runs, dataset, current_iid, method, attack, 0.3,
                         'asr', seeds, allow_partial))
-            line = replace_xx_sequence(line, cells)
+            line = replace_table_values(line, method, cells)
         lines.append(line)
     return text[:start] + ''.join(lines) + text[end:]
 
@@ -1497,9 +1552,9 @@ def fill_efficiency_table(text, label, metrics, table_key):
     lines = []
     for line in block.splitlines(keepends=True):
         method = detect_defense(line)
-        if method in EFFICIENCY_METHODS and 'XX.XX' in line:
+        if method in EFFICIENCY_METHODS:
             value = format_efficiency_value(metrics, table_key, method)
-            line = replace_xx_sequence(line, [value])
+            line = replace_table_values(line, method, [value])
         lines.append(line)
     return text[:start] + ''.join(lines) + text[end:]
 
@@ -1551,7 +1606,8 @@ def cmd_sweep(args):
         configs, args.gpus, args.tasks_per_gpu,
         args.max_cifar_per_gpu,
         args.mnist_only_tasks_per_gpu,
-        args.dry_run, args.list_pending)
+        args.dry_run, args.list_pending,
+        force_methods=args.rerun_methods)
 
 
 def cmd_efficiency(args):
@@ -1562,7 +1618,8 @@ def cmd_efficiency(args):
         configs, args.gpus, args.tasks_per_gpu,
         args.max_cifar_per_gpu,
         args.mnist_only_tasks_per_gpu,
-        args.dry_run, args.list_pending)
+        args.dry_run, args.list_pending,
+        force_methods=args.rerun_methods)
 
 
 def cmd_status(args):
@@ -1663,6 +1720,11 @@ def build_parser():
     parser.add_argument(
         '--methods', type=normalize_method, nargs='+', default=METHODS,
         help='subset of methods to sweep')
+    parser.add_argument(
+        '--rerun-methods', '--rerun_methods', type=normalize_method,
+        nargs='*', default=UPDATED_DEFENSE_METHODS,
+        help='completed methods to run again instead of skipping; default: '
+        'shieldfl pdfl pritrust_fl')
     parser.add_argument(
         '--attacks', choices=list(ATTACK_RATIOS.keys()), nargs='+',
         default=None, help='subset of attacks to sweep')
