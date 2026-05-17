@@ -38,13 +38,13 @@ def _pritrust_args(**overrides):
     values = dict(
         pritrust_audit_layers=1,
         pritrust_c_norm=2.0,
-        pritrust_zeta=0.0,
+        pritrust_zeta=0.1,
         pritrust_theta_tem=1.5,
         pritrust_theta_spa=1.5,
-        pritrust_gamma=1.5,
+        pritrust_gamma=0.8,
         pritrust_r_max=0.3,
-        pritrust_rho=0.8,
-        pritrust_kappa=0.5,
+        pritrust_rho=0.7,
+        pritrust_kappa=0.2,
         pritrust_security_bits=128,
         seed=1,
     )
@@ -127,7 +127,7 @@ def test_pritrust_prefilters_median_norm_outlier_before_aggregation():
     assert info['norm_prefiltered_count'] == 1
     assert info['norm_violation_counts'] == [0, 0, 1]
     assert info['selected_clients'] == [0, 1]
-    _assert_float_close(state['pritrust_client_trust'][2], 0.5)
+    _assert_float_close(state['pritrust_client_trust'][2], 0.2)
 
 
 def test_pritrust_zero_mad_uses_top_r_tiebreakers():
@@ -155,10 +155,10 @@ def test_pritrust_zero_mad_uses_top_r_tiebreakers():
     _assert_close(aggregated['w'], [1.0, 0.0])
     assert info['filter_mode'] == 'top_r_zero_mad'
     assert info['selected_clients'] == [1, 2]
-    _assert_float_close(state['pritrust_client_trust'][0], 0.05)
-    _assert_float_close(state['pritrust_client_trust'][1], 0.92)
-    _assert_float_close(state['pritrust_client_trust'][2], 0.52)
-    _assert_float_close(state['pritrust_client_trust'][3], 0.1)
+    _assert_float_close(state['pritrust_client_trust'][0], 0.02)
+    _assert_float_close(state['pritrust_client_trust'][1], 0.93)
+    _assert_float_close(state['pritrust_client_trust'][2], 0.58)
+    _assert_float_close(state['pritrust_client_trust'][3], 0.04)
 
 
 def test_pritrust_audit_selection_keeps_sentinel_tensors():

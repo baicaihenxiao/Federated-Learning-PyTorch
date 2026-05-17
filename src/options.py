@@ -251,7 +251,7 @@ def args_parser(experiment=None):
                         'the sentinel layer count')
     parser.add_argument('--pritrust_c_norm', type=float, default=2.0,
                         help='PriTrust-FL median-norm prefilter coefficient')
-    parser.add_argument('--pritrust_zeta', type=float, default=0.0,
+    parser.add_argument('--pritrust_zeta', type=float, default=0.1,
                         help='PriTrust-FL audited-layer norm violation '
                         'tolerance')
     parser.add_argument('--pritrust_theta_tem', type=float, default=1.5,
@@ -260,14 +260,14 @@ def args_parser(experiment=None):
     parser.add_argument('--pritrust_theta_spa', type=float, default=1.5,
                         help='PriTrust-FL spatial distance threshold '
                         'coefficient')
-    parser.add_argument('--pritrust_gamma', type=float, default=1.5,
+    parser.add_argument('--pritrust_gamma', type=float, default=0.8,
                         help='PriTrust-FL adaptive filtering coefficient')
     parser.add_argument('--pritrust_r_max', type=float, default=0.3,
                         help='PriTrust-FL malicious-ratio upper bound for '
                         'top-R fallback filtering')
-    parser.add_argument('--pritrust_rho', type=float, default=0.8,
+    parser.add_argument('--pritrust_rho', type=float, default=0.7,
                         help='PriTrust-FL historical trust memory factor')
-    parser.add_argument('--pritrust_kappa', type=float, default=0.5,
+    parser.add_argument('--pritrust_kappa', type=float, default=0.2,
                         help='PriTrust-FL punishment factor for filtered '
                         'clients')
     parser.add_argument('--pritrust_security_bits', type=int, default=128,

@@ -519,8 +519,8 @@ def _pritrust_fl(args, global_weights, local_weights, sample_counts,
          norm_violations, client_ids)
 
     updated_trust = []
-    rho = float(getattr(args, 'pritrust_rho', 0.8))
-    kappa = float(getattr(args, 'pritrust_kappa', 0.5))
+    rho = float(getattr(args, 'pritrust_rho', 0.7))
+    kappa = float(getattr(args, 'pritrust_kappa', 0.2))
     retained_set = set(retained_positions)
     for position, (client_id, previous_score, current_score) in enumerate(
             zip(client_ids, previous_trust, client_scores)):
@@ -694,7 +694,7 @@ def _pritrust_median_norm_prefilter(args, global_weights, local_weights,
             if float(norms[position].item()) > threshold:
                 norm_violations[position] += 1
 
-    tolerance = float(getattr(args, 'pritrust_zeta', 0.0)) * len(audited_keys)
+    tolerance = float(getattr(args, 'pritrust_zeta', 0.1)) * len(audited_keys)
     candidate_positions = [
         position for position, violations in enumerate(norm_violations)
         if float(violations) <= tolerance
@@ -797,7 +797,7 @@ def _adaptive_filter_positions(args, scores, candidate_positions,
     median_score = float(torch.median(score_tensor).item())
     deviations = torch.abs(score_tensor - median_score)
     mad_score = float(torch.median(deviations).item())
-    gamma = float(getattr(args, 'pritrust_gamma', 1.5))
+    gamma = float(getattr(args, 'pritrust_gamma', 0.8))
     if mad_score > 0.0:
         threshold = median_score - gamma * mad_score
         filter_mode = 'mad_threshold'

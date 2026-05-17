@@ -159,13 +159,13 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--pdfl_similarity_threshold:``` Cosine-similarity threshold for plaintext PDFL SecClu-style clustering. Default: `0.0`.
 * ```--pritrust_audit_layers:``` Number of audited layers for PriTrust-FL. Default: omitted, which uses `ceil(0.5L)` and is lower-bounded by the sentinel tensor count.
 * ```--pritrust_c_norm:``` Median-norm prefilter coefficient for PriTrust-FL. Default: `2.0`.
-* ```--pritrust_zeta:``` Audited-layer norm violation tolerance for PriTrust-FL. Default: `0.0`.
+* ```--pritrust_zeta:``` Audited-layer norm violation tolerance for PriTrust-FL. Default: `0.1`.
 * ```--pritrust_theta_tem:``` Temporal distance threshold coefficient for PriTrust-FL. Default: `1.5`.
 * ```--pritrust_theta_spa:``` Spatial distance threshold coefficient for PriTrust-FL. Default: `1.5`.
-* ```--pritrust_gamma:``` Adaptive filtering coefficient for PriTrust-FL. Default: `1.5`.
+* ```--pritrust_gamma:``` Adaptive filtering coefficient for PriTrust-FL. Default: `0.8`.
 * ```--pritrust_r_max:``` Malicious-ratio upper bound for PriTrust-FL top-R fallback filtering. Default: `0.3`.
-* ```--pritrust_rho:``` Historical trust memory factor for PriTrust-FL. Default: `0.8`.
-* ```--pritrust_kappa:``` Punishment factor for filtered PriTrust-FL clients. Default: `0.5`.
+* ```--pritrust_rho:``` Historical trust memory factor for PriTrust-FL. Default: `0.7`.
+* ```--pritrust_kappa:``` Punishment factor for filtered PriTrust-FL clients. Default: `0.2`.
 * ```--pritrust_security_bits:``` Security-bit value mixed into the plaintext stochastic audit seed. Default: `128`.
 * ```--attack:```   Federated attack. Options: `none`, `sign_flip`, `min_max`, `label_flip`, `backdoor`. Default: `none`.
 * ```--malicious_ratio:``` Fraction of total clients controlled by the adversary. Default: `0.0`.

@@ -140,7 +140,7 @@ This subsection evaluates the six methods under the sign-flipping attack and the
 \subsubsection{Clean Performance at Zero Attack Ratio}
 
 
-Table~\ref{tab:clean_baseline} reports the clean test accuracy at malicious ratio 0\% for all six methods on MNIST and CIFAR-10 under both data distributions. The 0\% setting isolates the utility loss caused by each defense in the absence of any adversary. PriTrust-FL preserves accuracy comparable to FedAvg, which confirms that the audit and trust mechanisms do not harm benign training.
+Table~\ref{tab:clean_baseline} reports the clean test accuracy at malicious ratio 0\% for all six methods on MNIST and CIFAR-10 under both data distributions. The 0\% setting isolates the utility loss caused by each defense in the absence of any adversary. PriTrust-FL preserves accuracy close to FedAvg and the other high-utility aggregation rules, which confirms that the audit and trust mechanisms introduce little benign-training overhead.
 
 \begin{table}[!t]
 \centering
@@ -165,7 +165,7 @@ PDFL            & XX.XX & XX.XX & XX.XX & XX.XX \\
 
 \subsubsection{Sign-Flipping Attack}
 
-Figure~\ref{fig:signflip_sweep} plots clean test accuracy against the malicious client ratio under the sign-flipping attack on both datasets and both data distributions. FedAvg degrades sharply once the attack ratio exceeds 10\%. Krum and Trimmed Mean retain reasonable accuracy at low ratios but lose ground at 30\%. ShieldFL and PDFL provide stable cosine-based defense but show a visible drop in the Non-IID setting. PriTrust-FL achieves the flattest accuracy curve across all four panels, which indicates the strongest robustness to sign-flipping at every evaluated ratio.
+Figure~\ref{fig:signflip_sweep} plots clean test accuracy against the malicious client ratio under the sign-flipping attack on both datasets and both data distributions. FedAvg collapses once the attack ratio reaches 20\%, especially on CIFAR-10. Krum and Trimmed Mean remain usable on MNIST but lose more accuracy on CIFAR-10 as the malicious ratio increases. ShieldFL is substantially more stable after the updated CIFAR-10 results, but PriTrust-FL still has the flattest high-accuracy curve and achieves the best 30\% accuracy in all four panels.
 
 \begin{figure}[!t]
 \centering
@@ -176,7 +176,7 @@ Figure~\ref{fig:signflip_sweep} plots clean test accuracy against the malicious 
 
 \subsubsection{Min-Max Attack}
 
-Figure~\ref{fig:minmax_sweep} reports the corresponding results under the Min-Max attack. Min-Max is a stronger untargeted attack because it constrains malicious updates to remain within the benign spread. Geometric defenses such as Krum struggle under this attack because the malicious vectors imitate the inter-client norm distribution. ShieldFL and PDFL also lose accuracy as the ratio rises. PriTrust-FL exhibits the smallest accuracy drop across the four panels. The dual-anchor design exposes the malicious deviation in the audited layers even when the overall update norm is bounded.
+Figure~\ref{fig:minmax_sweep} reports the corresponding results under the Min-Max attack. Min-Max is a stronger untargeted attack because it constrains malicious updates to remain within the benign spread. Geometric defenses such as Krum are fragile under this attack, with severe failures on MNIST and CIFAR-10 Non-IID at 30\%. On MNIST, FedAvg, PDFL, and PriTrust-FL all maintain high clean accuracy, while ShieldFL recovers from the previous outlier but remains lower under Non-IID. On CIFAR-10, PriTrust-FL is not always the highest-accuracy method, but it stays competitive at 30\% and shows a much smoother recovery on the Non-IID Min-Max setting than the earlier data.
 
 \begin{figure}[!t]
 \centering
@@ -187,7 +187,7 @@ Figure~\ref{fig:minmax_sweep} reports the corresponding results under the Min-Ma
 
 \subsubsection{Worst-Case Comparison at 30\% Ratio}
 
-Table~\ref{tab:untargeted_30} summarizes the clean test accuracy at the highest evaluated malicious ratio of 30\%. PriTrust-FL achieves the highest accuracy in every column. The advantage is largest under the Min-Max attack and under the Non-IID distribution, which are jointly the most challenging conditions for cosine-based defenses.
+Table~\ref{tab:untargeted_30} summarizes the clean test accuracy at the highest evaluated malicious ratio of 30\%. PriTrust-FL is the top method in all four sign-flipping columns and remains among the strongest methods under Min-Max, especially on CIFAR-10 Non-IID where it improves over PDFL and the robust baselines. Some Min-Max columns favor FedAvg, PDFL, or ShieldFL, indicating that bounded untargeted attacks can preserve benign-looking updates for several aggregators. Overall, PriTrust-FL offers the most consistent robustness profile across the two untargeted attacks.
 
 \begin{table*}[!t]
 \centering
@@ -220,7 +220,7 @@ This subsection evaluates the six methods under the label-flipping attack and th
 
 \subsubsection{Label-Flipping Attack}
 
-Figure~\ref{fig:labelflip_sweep} plots ASR and clean test accuracy against the malicious client ratio under the label-flipping attack. Lower ASR indicates stronger defense. Without defense, ASR rises rapidly as the attack ratio grows. Krum and Trimmed Mean reduce ASR but suffer accuracy loss in the Non-IID setting. ShieldFL and PDFL keep ASR moderate at low ratios but lose containment at 30\%. PriTrust-FL keeps ASR low across all evaluated ratios on both datasets.
+Figure~\ref{fig:labelflip_sweep} plots ASR and clean test accuracy against the malicious client ratio under the label-flipping attack. Lower ASR indicates stronger defense. Most robust methods keep the label-flip ASR low on MNIST, although Krum pays a large clean-accuracy cost under Non-IID partitioning. On CIFAR-10, PriTrust-FL drives ASR to zero in the IID setting and keeps it low in the Non-IID setting, while preserving competitive clean accuracy. The updated Non-IID CIFAR-10 result shows a small ASR increase for PriTrust-FL at 30\%, but it remains close to the best-performing robust baselines.
 
 \begin{figure}[!t]
 \centering
@@ -231,7 +231,7 @@ Figure~\ref{fig:labelflip_sweep} plots ASR and clean test accuracy against the m
 
 \subsubsection{Backdoor Attack}
 
-Figure~\ref{fig:backdoor_sweep} reports the corresponding results under the backdoor attack. The backdoor attack is harder to detect than label-flipping because the malicious updates are largely aligned with benign updates on non-trigger features. PriTrust-FL substantially outperforms all baselines on backdoor ASR across both data distributions. The stochastic layer auditing combined with the dual-anchor distance test detects backdoor-induced deviations even when the global gradient direction matches the benign trend.
+Figure~\ref{fig:backdoor_sweep} reports the corresponding results under the backdoor attack. The backdoor attack is harder to detect than label-flipping because the malicious updates are largely aligned with benign updates on non-trigger features. The updated curves show clear ASR reductions for ShieldFL, PDFL, and PriTrust-FL compared with the undefended and averaging-style baselines, but the best ASR differs by setting. PriTrust-FL is strongest on MNIST IID and CIFAR-10 Non-IID, and it keeps substantially better clean accuracy than Krum in the settings where Krum has lower ASR. This indicates that the trust-guided audit is most useful when robustness and clean utility are considered jointly.
 
 \begin{figure}[!t]
 \centering
@@ -242,7 +242,7 @@ Figure~\ref{fig:backdoor_sweep} reports the corresponding results under the back
 
 \subsubsection{Worst-Case Comparison at 30\% Ratio}
 
-Table~\ref{tab:targeted_30} summarizes the clean test accuracy and ASR at the highest evaluated malicious ratio of 30\%. PriTrust-FL achieves the lowest ASR and the highest or comparable clean accuracy in all columns. The improvement is most visible on the CIFAR-10 backdoor configuration under Non-IID partitioning.
+Table~\ref{tab:targeted_30} summarizes the clean test accuracy and ASR at the highest evaluated malicious ratio of 30\%. Under label-flipping, PriTrust-FL attains zero ASR on MNIST and CIFAR-10 IID, while remaining close to the lowest ASR on CIFAR-10 Non-IID. Under backdoor attacks, PriTrust-FL obtains the lowest ASR on MNIST IID and CIFAR-10 Non-IID, whereas Krum has lower ASR on MNIST Non-IID and CIFAR-10 IID at the cost of much lower clean accuracy. These results show that PriTrust-FL provides the best accuracy-ASR tradeoff in the more utility-sensitive targeted settings rather than uniformly minimizing ASR in every column.
 
 \begin{table*}[!t]
 \centering
@@ -466,13 +466,13 @@ def build_command(cfg, gpu_id=None):
         '--backdoor_fraction=0.2',
         f'--seed={cfg["seed"]}',
         '--pritrust_c_norm=2.0',
-        '--pritrust_zeta=0.0',
+        '--pritrust_zeta=0.1',
         '--pritrust_theta_tem=1.5',
         '--pritrust_theta_spa=1.5',
-        '--pritrust_gamma=1.5',
+        '--pritrust_gamma=0.8',
         '--pritrust_r_max=0.3',
-        '--pritrust_rho=0.8',
-        '--pritrust_kappa=0.5',
+        '--pritrust_rho=0.7',
+        '--pritrust_kappa=0.2',
     ]
     if gpu_id is not None:
         cmd.append(f'--gpu={gpu_id}')
@@ -1306,13 +1306,13 @@ def benchmark_audit_times(args):
             pdfl_similarity_threshold=0.0,
             pritrust_audit_layers=None,
             pritrust_c_norm=2.0,
-            pritrust_zeta=0.0,
+            pritrust_zeta=0.1,
             pritrust_theta_tem=1.5,
             pritrust_theta_spa=1.5,
-            pritrust_gamma=1.5,
+            pritrust_gamma=0.8,
             pritrust_r_max=0.3,
-            pritrust_rho=0.8,
-            pritrust_kappa=0.5,
+            pritrust_rho=0.7,
+            pritrust_kappa=0.2,
             pritrust_security_bits=128,
             seed=1,
         )
