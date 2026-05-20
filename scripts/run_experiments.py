@@ -119,6 +119,32 @@ CLIENT_FRAC = 0.1
 LOCAL_EPOCHS = 1
 NA = 'N/A'
 
+PRITRUST_ARG_KEYS = [
+    'pritrust_audit_layers',
+    'pritrust_c_norm',
+    'pritrust_zeta',
+    'pritrust_theta_tem',
+    'pritrust_theta_spa',
+    'pritrust_gamma',
+    'pritrust_r_max',
+    'pritrust_rho',
+    'pritrust_kappa',
+    'pritrust_security_bits',
+]
+PRITRUST_DEFAULTS = {
+    'pritrust_audit_layers': None,
+    'pritrust_c_norm': 2.0,
+    'pritrust_zeta': 0.1,
+    'pritrust_theta_tem': 1.5,
+    'pritrust_theta_spa': 1.5,
+    'pritrust_gamma': 0.8,
+    'pritrust_r_max': 0.3,
+    'pritrust_rho': 0.7,
+    'pritrust_kappa': 0.2,
+    'pritrust_security_bits': 128,
+}
+ACTIVE_PRITRUST_PARAMS = PRITRUST_DEFAULTS.copy()
+
 DEFENSE_LINE_PATTERNS = {
     'fedavg': re.compile(r'(^|&\s*)FedAvg\b'),
     'krum': re.compile(r'(^|&\s*)Krum\b'),
@@ -365,6 +391,64 @@ def float_key(value):
     return round(float(value), 8)
 
 
+def pritrust_params_from_namespace(args):
+    return {
+        key: getattr(args, key, PRITRUST_DEFAULTS[key])
+        for key in PRITRUST_ARG_KEYS
+    }
+
+
+def set_active_pritrust_params(args):
+    ACTIVE_PRITRUST_PARAMS.update(pritrust_params_from_namespace(args))
+
+
+def pritrust_params_with_defaults(values=None, base=None):
+    params = (ACTIVE_PRITRUST_PARAMS if base is None else base).copy()
+    if values:
+        for key in PRITRUST_ARG_KEYS:
+            if key in values:
+                params[key] = values[key]
+    return params
+
+
+def pritrust_config_key(cfg):
+    if normalize_method(cfg['defense']) != 'pritrust_fl':
+        return ()
+
+    params = pritrust_params_with_defaults(cfg)
+    audit_layers = params['pritrust_audit_layers']
+    return (
+        -1 if audit_layers is None else int(audit_layers),
+        float_key(params['pritrust_c_norm']),
+        float_key(params['pritrust_zeta']),
+        float_key(params['pritrust_theta_tem']),
+        float_key(params['pritrust_theta_spa']),
+        float_key(params['pritrust_gamma']),
+        float_key(params['pritrust_r_max']),
+        float_key(params['pritrust_rho']),
+        float_key(params['pritrust_kappa']),
+        int(params['pritrust_security_bits']),
+    )
+
+
+def pritrust_variant_slug(cfg):
+    if normalize_method(cfg['defense']) != 'pritrust_fl':
+        return None
+    params = pritrust_params_with_defaults(cfg)
+    material = json.dumps(params, sort_keys=True)
+    return 'pritrust_' + hashlib.sha1(material.encode('utf-8')).hexdigest()[:10]
+
+
+def pritrust_csv_values(cfg):
+    if normalize_method(cfg['defense']) != 'pritrust_fl':
+        return {key: '' for key in PRITRUST_ARG_KEYS}
+    params = pritrust_params_with_defaults(cfg)
+    return {
+        key: '' if params[key] is None else params[key]
+        for key in PRITRUST_ARG_KEYS
+    }
+
+
 def config_key(cfg):
     return (
         str(cfg['dataset']).lower(),
@@ -380,13 +464,13 @@ def config_key(cfg):
         int(cfg.get('local_bs', DEFAULT_LOCAL_BS[str(cfg['dataset']).lower()])),
         float_key(cfg.get('lr', DEFAULT_LR[str(cfg['dataset']).lower()])),
         float_key(cfg.get('dirichlet_alpha', DIRICHLET_ALPHA)),
-    )
+    ) + pritrust_config_key(cfg)
 
 
 def base_config(dataset, iid, defense, attack, ratio, seed, epochs,
                 test_interval):
     dataset = dataset.lower()
-    return {
+    cfg = {
         'dataset': dataset,
         'iid': int(iid),
         'defense': normalize_method(defense),
@@ -408,6 +492,8 @@ def base_config(dataset, iid, defense, attack, ratio, seed, epochs,
         'dirichlet_alpha': DIRICHLET_ALPHA,
         'test_interval': int(test_interval),
     }
+    cfg.update(pritrust_params_with_defaults())
+    return cfg
 
 
 def make_main_configs(seeds, methods, only_dataset, attacks, test_interval):
@@ -465,15 +551,17 @@ def build_command(cfg, gpu_id=None):
         '--attack_target_label=7',
         '--backdoor_fraction=0.2',
         f'--seed={cfg["seed"]}',
-        '--pritrust_c_norm=2.0',
-        '--pritrust_zeta=0.1',
-        '--pritrust_theta_tem=1.5',
-        '--pritrust_theta_spa=1.5',
-        '--pritrust_gamma=0.8',
-        '--pritrust_r_max=0.3',
-        '--pritrust_rho=0.7',
-        '--pritrust_kappa=0.2',
     ]
+    if normalize_method(cfg['defense']) == 'pritrust_fl':
+        pritrust_params = pritrust_params_with_defaults(cfg)
+        if pritrust_params['pritrust_audit_layers'] is not None:
+            cmd.append(
+                '--pritrust_audit_layers={}'.format(
+                    int(pritrust_params['pritrust_audit_layers'])))
+        for key in PRITRUST_ARG_KEYS:
+            if key == 'pritrust_audit_layers':
+                continue
+            cmd.append('--{}={}'.format(key, pritrust_params[key]))
     if gpu_id is not None:
         cmd.append(f'--gpu={gpu_id}')
     return cmd
@@ -519,6 +607,7 @@ def load_pkl(pkl_path):
             'dirichlet_alpha': float(args.get(
                 'dirichlet_alpha', DIRICHLET_ALPHA)),
         }
+        cfg.update(pritrust_params_with_defaults(args, base=PRITRUST_DEFAULTS))
     except (KeyError, TypeError, ValueError, argparse.ArgumentTypeError):
         return None
 
@@ -867,7 +956,8 @@ def write_csvs(runs, seeds, allow_partial=False):
             handle,
             fieldnames=[
                 'dataset', 'iid', 'defense', 'attack', 'malicious_ratio',
-                'seed', 'epochs', 'final_mta', 'final_asr', 'pkl',
+                'seed', 'epochs', *PRITRUST_ARG_KEYS, 'final_mta',
+                'final_asr', 'pkl',
             ],
         )
         writer.writeheader()
@@ -882,6 +972,7 @@ def write_csvs(runs, seeds, allow_partial=False):
                 'malicious_ratio': cfg['malicious_ratio'],
                 'seed': cfg['seed'],
                 'epochs': cfg['epochs'],
+                **pritrust_csv_values(cfg),
                 'final_mta': record['final_mta'],
                 'final_asr': record['final_asr'],
                 'pkl': record['pkl'],
@@ -963,15 +1054,18 @@ def slug(value):
 def raw_run_dir(raw_root, record):
     cfg = record['cfg']
     ratio = f'mr_{float(cfg["malicious_ratio"]):.1f}'.replace('.', 'p')
-    return (
+    path = (
         Path(raw_root) /
         slug(cfg['dataset']) /
         slug(iid_label(cfg['iid'])) /
         slug(cfg['defense']) /
         slug(cfg['attack']) /
-        ratio /
-        f'seed_{int(cfg["seed"])}_ep_{int(cfg["epochs"])}'
+        ratio
     )
+    pritrust_variant = pritrust_variant_slug(cfg)
+    if pritrust_variant is not None:
+        path = path / pritrust_variant
+    return path / f'seed_{int(cfg["seed"])}_ep_{int(cfg["epochs"])}'
 
 
 def export_sorted_raw_data(runs, raw_root=DEFAULT_RAW_OUT):
@@ -1734,6 +1828,48 @@ def build_parser():
     parser.add_argument(
         '--test_interval', type=int, default=0,
         help='main-sweep evaluation interval; 0 records only final metrics')
+    pritrust_group = parser.add_argument_group('PriTrust-FL hyperparameters')
+    pritrust_group.add_argument(
+        '--pritrust-audit-layers', '--pritrust_audit_layers', type=int,
+        default=PRITRUST_DEFAULTS['pritrust_audit_layers'],
+        help='number of audited layers for PriTrust-FL; omitted uses the '
+        'federated_main.py default')
+    pritrust_group.add_argument(
+        '--pritrust-c-norm', '--pritrust_c_norm', type=float,
+        default=PRITRUST_DEFAULTS['pritrust_c_norm'],
+        help='PriTrust-FL median-norm prefilter coefficient')
+    pritrust_group.add_argument(
+        '--pritrust-zeta', '--pritrust_zeta', type=float,
+        default=PRITRUST_DEFAULTS['pritrust_zeta'],
+        help='PriTrust-FL audited-layer norm violation tolerance')
+    pritrust_group.add_argument(
+        '--pritrust-theta-tem', '--pritrust_theta_tem', type=float,
+        default=PRITRUST_DEFAULTS['pritrust_theta_tem'],
+        help='PriTrust-FL temporal distance threshold coefficient')
+    pritrust_group.add_argument(
+        '--pritrust-theta-spa', '--pritrust_theta_spa', type=float,
+        default=PRITRUST_DEFAULTS['pritrust_theta_spa'],
+        help='PriTrust-FL spatial distance threshold coefficient')
+    pritrust_group.add_argument(
+        '--pritrust-gamma', '--pritrust_gamma', type=float,
+        default=PRITRUST_DEFAULTS['pritrust_gamma'],
+        help='PriTrust-FL adaptive filtering coefficient')
+    pritrust_group.add_argument(
+        '--pritrust-r-max', '--pritrust_r_max', type=float,
+        default=PRITRUST_DEFAULTS['pritrust_r_max'],
+        help='PriTrust-FL malicious-ratio upper bound for top-R fallback')
+    pritrust_group.add_argument(
+        '--pritrust-rho', '--pritrust_rho', type=float,
+        default=PRITRUST_DEFAULTS['pritrust_rho'],
+        help='PriTrust-FL historical trust memory factor')
+    pritrust_group.add_argument(
+        '--pritrust-kappa', '--pritrust_kappa', type=float,
+        default=PRITRUST_DEFAULTS['pritrust_kappa'],
+        help='PriTrust-FL punishment factor for filtered clients')
+    pritrust_group.add_argument(
+        '--pritrust-security-bits', '--pritrust_security_bits', type=int,
+        default=PRITRUST_DEFAULTS['pritrust_security_bits'],
+        help='security-bit value mixed into the plaintext audit seed')
     parser.add_argument(
         '--dry-run', '--dry_run', action='store_true',
         help='print pending commands without running them')
@@ -1809,6 +1945,27 @@ def main():
     args = parser.parse_args()
     args.methods = [normalize_method(method) for method in args.methods]
     args.seeds = [int(seed) for seed in args.seeds]
+    if args.pritrust_audit_layers is not None and args.pritrust_audit_layers < 1:
+        parser.error('--pritrust-audit-layers must be at least 1 when set')
+    if args.pritrust_c_norm <= 0:
+        parser.error('--pritrust-c-norm must be greater than 0')
+    if not 0 <= args.pritrust_zeta <= 1:
+        parser.error('--pritrust-zeta must be between 0 and 1')
+    if args.pritrust_theta_tem < 0:
+        parser.error('--pritrust-theta-tem must be greater than or equal to 0')
+    if args.pritrust_theta_spa < 0:
+        parser.error('--pritrust-theta-spa must be greater than or equal to 0')
+    if args.pritrust_gamma < 0:
+        parser.error('--pritrust-gamma must be greater than or equal to 0')
+    if not 0 <= args.pritrust_r_max < 1:
+        parser.error('--pritrust-r-max must be in [0, 1)')
+    if not 0 <= args.pritrust_rho <= 1:
+        parser.error('--pritrust-rho must be between 0 and 1')
+    if not 0 <= args.pritrust_kappa < 1:
+        parser.error('--pritrust-kappa must be in [0, 1)')
+    if args.pritrust_security_bits < 1:
+        parser.error('--pritrust-security-bits must be at least 1')
+    set_active_pritrust_params(args)
     if args.tasks_per_gpu < 1:
         parser.error('--tasks-per-gpu must be at least 1')
     if args.max_cifar_per_gpu < 1:
