@@ -532,8 +532,11 @@ def _pritrust_fl(args, global_weights, local_weights, sample_counts,
         trust_memory[int(client_id)] = new_score
         updated_trust.append(new_score)
 
-    retained_trust = [updated_trust[position] for position in retained_positions]
-    aggregation_weights = _normalize_or_uniform(retained_trust)
+    retained_mass = [
+        updated_trust[position] * float(sample_counts[position])
+        for position in retained_positions
+    ]
+    aggregation_weights = _normalize_or_uniform(retained_mass)
     aggregated = _trust_weighted_delta_update(
         global_weights, local_weights, retained_positions, aggregation_weights)
 

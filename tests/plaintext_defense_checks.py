@@ -161,6 +161,22 @@ def test_pritrust_zero_mad_uses_top_r_tiebreakers():
     _assert_float_close(state['pritrust_client_trust'][3], 0.04)
 
 
+def test_pritrust_weights_retained_clients_by_trust_and_sample_count():
+    args = _pritrust_args()
+    global_weights = _state([0.0, 0.0])
+    local_weights = [
+        _state([1.0, 0.0]),
+        _state([1.5, 0.0]),
+    ]
+    state = {}
+
+    aggregated, info = _pritrust_fl(
+        args, global_weights, local_weights, [1, 3], [0, 1], state)
+
+    _assert_close(aggregated['w'], [1.375, 0.0])
+    assert info['selected_clients'] == [0, 1]
+
+
 def test_pritrust_audit_selection_keeps_sentinel_tensors():
     args = _pritrust_args(pritrust_audit_layers=3)
     keys = [
@@ -185,5 +201,6 @@ if __name__ == '__main__':
     test_pdfl_uses_majority_cluster_similarity_weights()
     test_pritrust_prefilters_median_norm_outlier_before_aggregation()
     test_pritrust_zero_mad_uses_top_r_tiebreakers()
+    test_pritrust_weights_retained_clients_by_trust_and_sample_count()
     test_pritrust_audit_selection_keeps_sentinel_tensors()
     print('plaintext defense checks passed')
