@@ -35,6 +35,7 @@ active, it can run up to 5 MNIST experiments concurrently.
 
 import argparse
 import csv
+import hashlib
 import json
 import pickle
 import re
