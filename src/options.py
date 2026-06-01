@@ -4,9 +4,15 @@
 
 import argparse
 
+from attacks import ATTACK_CHOICES, NO_ATTACK
+from defenses import DEFENSE_CHOICES, normalize_defense_name
+
 
 MAX_RANDOM_SEED = 2**32 - 1
+
 DEFAULT_DIRICHLET_ALPHA = 0.3
+NUM_DATASET_CLASSES = 10
+
 
 
 def seed_value(value):
@@ -26,6 +32,13 @@ def seed_value(value):
             f'--seed must be between 0 and {MAX_RANDOM_SEED}, or "random"')
 
     return seed
+
+
+def defense_value(value):
+    try:
+        return normalize_defense_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
 
 
 DEFAULT_MODELS = {
@@ -211,6 +224,83 @@ def args_parser(experiment=None):
                         'or global rounds during training; set 0 to disable '
                         'intermediate test evaluation')
 
+    # defense arguments
+    parser.add_argument('--defense', type=defense_value, default='fedavg',
+                        choices=DEFENSE_CHOICES,
+                        help='federated aggregation defense: fedavg, krum, '
+                        'trimmed_mean, shieldfl, pdfl, or pritrust_fl')
+    parser.add_argument('--defense_byzantine_clients', type=int, default=None,
+                        help='assumed number of Byzantine clients selected per '
+                        'round for Krum/Trimmed Mean; default infers it from '
+                        '--malicious_ratio')
+    parser.add_argument('--trimmed_mean_trim_ratio', type=float, default=None,
+                        help='fraction of selected clients to trim from each '
+                        'coordinate tail; default infers the trim count from '
+                        '--malicious_ratio')
+    parser.add_argument('--shieldfl_similarity_threshold', type=float,
+                        default=0.0,
+                        help='legacy option kept for run-name compatibility; '
+                        'plaintext ShieldFL follows the paper baseline '
+                        'confidence rule')
+    parser.add_argument('--pdfl_similarity_threshold', type=float, default=0.0,
+                        help='cosine-similarity threshold for plaintext PDFL '
+                        'SecClu-style client clustering')
+    parser.add_argument('--pritrust_audit_layers', type=int, default=None,
+                        help='number of audited layers K_t for PriTrust-FL; '
+                        'default uses ceil(0.5L) and is lower-bounded by '
+                        'the sentinel layer count')
+    parser.add_argument('--pritrust_c_norm', type=float, default=2.0,
+                        help='PriTrust-FL median-norm prefilter coefficient')
+    parser.add_argument('--pritrust_zeta', type=float, default=0.1,
+                        help='PriTrust-FL audited-layer norm violation '
+                        'tolerance')
+    parser.add_argument('--pritrust_theta_tem', type=float, default=1.5,
+                        help='PriTrust-FL temporal distance threshold '
+                        'coefficient')
+    parser.add_argument('--pritrust_theta_spa', type=float, default=1.5,
+                        help='PriTrust-FL spatial distance threshold '
+                        'coefficient')
+    parser.add_argument('--pritrust_gamma', type=float, default=0.8,
+                        help='PriTrust-FL adaptive filtering coefficient')
+    parser.add_argument('--pritrust_r_max', type=float, default=0.3,
+                        help='PriTrust-FL malicious-ratio upper bound for '
+                        'top-R fallback filtering')
+    parser.add_argument('--pritrust_rho', type=float, default=0.7,
+                        help='PriTrust-FL historical trust memory factor')
+    parser.add_argument('--pritrust_kappa', type=float, default=0.2,
+                        help='PriTrust-FL punishment factor for filtered '
+                        'clients')
+    parser.add_argument('--pritrust_security_bits', type=int, default=128,
+                        help='security-bit value mixed into the plaintext '
+                        'stochastic audit seed')
+    parser.add_argument('--pritrust_alpha_min', type=float,
+                        default=argparse.SUPPRESS,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--pritrust_alpha_max', type=float,
+                        default=argparse.SUPPRESS,
+                        help=argparse.SUPPRESS)
+
+    # attack arguments
+    parser.add_argument('--attack', type=str.lower, default=NO_ATTACK,
+                        choices=ATTACK_CHOICES,
+                        help='Byzantine/data attack to apply in federated '
+                        'training')
+    parser.add_argument('--malicious_ratio', type=float, default=0.0,
+                        help='fraction of total clients controlled by the '
+                        'adversary')
+    parser.add_argument('--sign_flip_lambda', type=float, default=5.0,
+                        help='amplification factor for sign-flipping attack')
+    parser.add_argument('--min_max_search_steps', type=int, default=30,
+                        help='binary-search steps for the Min-Max attack')
+    parser.add_argument('--label_flip_source', type=int, default=1,
+                        help='source class changed by label-flipping attack')
+    parser.add_argument('--attack_target_label', type=int, default=7,
+                        help='target class for label-flipping and backdoor '
+                        'attacks')
+    parser.add_argument('--backdoor_fraction', type=float, default=0.2,
+                        help='fraction of each malicious client partition '
+                        'poisoned per round by the backdoor attack')
+
     # model arguments
     parser.add_argument('--model', type=str.lower, default=None,
                         choices=['mlp', 'cnn', 'resnet18'],
@@ -244,6 +334,51 @@ def args_parser(experiment=None):
     args = apply_training_preset(args)
     if args.test_interval < 0:
         parser.error('--test_interval must be greater than or equal to 0')
+    if (args.defense_byzantine_clients is not None and
+            args.defense_byzantine_clients < 0):
+        parser.error('--defense_byzantine_clients must be greater than or '
+                     'equal to 0')
+    if (args.trimmed_mean_trim_ratio is not None and
+            not 0 <= args.trimmed_mean_trim_ratio < 0.5):
+        parser.error('--trimmed_mean_trim_ratio must be in [0, 0.5)')
+    if not -1 <= args.shieldfl_similarity_threshold <= 1:
+        parser.error('--shieldfl_similarity_threshold must be between -1 '
+                     'and 1')
+    if not -1 <= args.pdfl_similarity_threshold <= 1:
+        parser.error('--pdfl_similarity_threshold must be between -1 and 1')
+    if (args.pritrust_audit_layers is not None and
+            args.pritrust_audit_layers < 1):
+        parser.error('--pritrust_audit_layers must be at least 1 when set')
+    if args.pritrust_c_norm <= 0:
+        parser.error('--pritrust_c_norm must be greater than 0')
+    if not 0 <= args.pritrust_zeta <= 1:
+        parser.error('--pritrust_zeta must be between 0 and 1')
+    if args.pritrust_theta_tem < 0:
+        parser.error('--pritrust_theta_tem must be greater than or equal to 0')
+    if args.pritrust_theta_spa < 0:
+        parser.error('--pritrust_theta_spa must be greater than or equal to 0')
+    if args.pritrust_gamma < 0:
+        parser.error('--pritrust_gamma must be greater than or equal to 0')
+    if not 0 <= args.pritrust_r_max < 1:
+        parser.error('--pritrust_r_max must be in [0, 1)')
+    if not 0 <= args.pritrust_rho <= 1:
+        parser.error('--pritrust_rho must be between 0 and 1')
+    if not 0 <= args.pritrust_kappa < 1:
+        parser.error('--pritrust_kappa must be in [0, 1)')
+    if args.pritrust_security_bits < 1:
+        parser.error('--pritrust_security_bits must be at least 1')
     if args.dirichlet_alpha <= 0:
         parser.error('--dirichlet_alpha must be greater than 0')
+    if args.malicious_ratio < 0 or args.malicious_ratio > 1:
+        parser.error('--malicious_ratio must be between 0 and 1')
+    if args.sign_flip_lambda <= 0:
+        parser.error('--sign_flip_lambda must be greater than 0')
+    if args.min_max_search_steps < 1:
+        parser.error('--min_max_search_steps must be at least 1')
+    if args.backdoor_fraction < 0 or args.backdoor_fraction > 1:
+        parser.error('--backdoor_fraction must be between 0 and 1')
+    if not 0 <= args.label_flip_source < NUM_DATASET_CLASSES:
+        parser.error('--label_flip_source must be between 0 and 9')
+    if not 0 <= args.attack_target_label < NUM_DATASET_CLASSES:
+        parser.error('--attack_target_label must be between 0 and 9')
     return args

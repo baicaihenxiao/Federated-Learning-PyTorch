@@ -6,6 +6,10 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from attacks import (
+    BACKDOOR, LABEL_FLIP, apply_data_attack, sample_backdoor_indices,
+    stamp_backdoor_trigger,
+)
 from utils import get_device, get_logger, get_optimizer
 
 
@@ -16,9 +20,10 @@ class DatasetSplit(Dataset):
     """An abstract Dataset class wrapped around Pytorch Dataset class.
     """
 
-    def __init__(self, dataset, idxs):
+    def __init__(self, dataset, idxs, return_index=False):
         self.dataset = dataset
         self.idxs = [int(i) for i in idxs]
+        self.return_index = return_index
 
     def __len__(self):
         return len(self.idxs)
@@ -27,14 +32,22 @@ class DatasetSplit(Dataset):
         image, label = self.dataset[self.idxs[item]]
         if not torch.is_tensor(image):
             image = torch.as_tensor(image)
-        return image, torch.as_tensor(label)
+        label = torch.as_tensor(label)
+        if self.return_index:
+            return image, label, torch.as_tensor(item)
+        return image, label
 
 
 class LocalUpdate(object):
-    def __init__(self, args, dataset, idxs, logger):
+    def __init__(self, args, dataset, idxs, logger, client_id=None,
+                 is_malicious=False):
         self.args = args
         self.logger = logger
-        self.local_dataset = DatasetSplit(dataset, list(idxs))
+        self.dataset = dataset
+        self.idxs = list(idxs)
+        self.client_id = client_id
+        self.is_malicious = is_malicious
+        self.local_dataset = DatasetSplit(dataset, self.idxs)
         self.trainloader = self.build_trainloader()
         self.testloader = None
         self.device = get_device(args)
@@ -43,7 +56,9 @@ class LocalUpdate(object):
 
     def build_trainloader(self):
         """Build a train loader over all local data for one client."""
-        return DataLoader(self.local_dataset, batch_size=self.args.local_bs,
+        train_dataset = DatasetSplit(self.dataset, self.idxs,
+                                     return_index=True)
+        return DataLoader(train_dataset, batch_size=self.args.local_bs,
                           shuffle=True)
 
     def build_testloader(self):
@@ -62,11 +77,22 @@ class LocalUpdate(object):
 
         # Set optimizer for the local updates
         optimizer = get_optimizer(self.args, model)
+        backdoor_indices = sample_backdoor_indices(
+            self.args, len(self.local_dataset), self.is_malicious)
 
         for iter in range(self.args.local_ep):
             running_loss, num_seen = 0.0, 0
-            for batch_idx, (images, labels) in enumerate(self.trainloader):
+            for batch_idx, batch in enumerate(self.trainloader):
+                if len(batch) == 3:
+                    images, labels, local_indices = batch
+                else:
+                    images, labels = batch
+                    local_indices = None
                 images, labels = images.to(self.device), labels.to(self.device)
+                images, labels = apply_data_attack(
+                    self.args, images, labels, self.is_malicious,
+                    local_indices=local_indices,
+                    backdoor_indices=backdoor_indices)
 
                 model.zero_grad()
                 log_probs = model(images)
@@ -143,3 +169,40 @@ def test_inference(args, model, test_dataset):
 
     accuracy = correct/total
     return accuracy, loss/total
+
+
+def test_attack_success_rate(args, model, test_dataset):
+    """Evaluate targeted attack success rate on the global test dataset."""
+    if args.attack not in (LABEL_FLIP, BACKDOOR):
+        return None
+
+    model.eval()
+    device = next(model.parameters()).device
+    testloader = DataLoader(test_dataset, batch_size=128,
+                            shuffle=False)
+    target_label = int(args.attack_target_label)
+    total, success = 0, 0
+
+    with torch.no_grad():
+        for batch_idx, (images, labels) in enumerate(testloader):
+            images, labels = images.to(device), labels.to(device)
+
+            if args.attack == LABEL_FLIP:
+                mask = labels == int(args.label_flip_source)
+                if not torch.any(mask).item():
+                    continue
+                attack_images = images[mask]
+            else:
+                mask = labels != target_label
+                if not torch.any(mask).item():
+                    continue
+                attack_images = stamp_backdoor_trigger(args, images[mask])
+
+            outputs = model(attack_images)
+            _, pred_labels = torch.max(outputs, 1)
+            success += torch.sum(pred_labels == target_label).item()
+            total += pred_labels.numel()
+
+    if total == 0:
+        return 0.0
+    return success / total

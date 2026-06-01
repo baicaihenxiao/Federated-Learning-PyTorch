@@ -8,12 +8,10 @@ import math
 import time
 import pickle
 from pathlib import Path
-import numpy as np
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import torch
 try:
     from tensorboardX import SummaryWriter
 except ImportError:
@@ -28,12 +26,16 @@ except ImportError:
             pass
 
 from options import args_parser
-from update import LocalUpdate, test_inference
+from attacks import (
+    apply_update_attack, has_attack, sample_round_clients,
+    select_malicious_clients,
+)
+from defenses import aggregate_weights, normalize_defense_name
+from update import LocalUpdate, test_attack_success_rate, test_inference
 from models import MLP, CNNMnist, CNNCifar, ResNet18Cifar, NUM_CLASSES
 from utils import (
-    get_dataset, get_device, average_weights, get_logger, get_run_name,
-    log_args, log_git_commit, promote_log_file, set_log_file, set_seed,
-    format_run_time,
+    get_dataset, get_device, get_logger, get_run_name, log_args,
+    log_git_commit, promote_log_file, set_log_file, set_seed, format_run_time,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -84,7 +86,14 @@ def get_federated_run_name(args):
         'fed',
         ['dataset', 'model', 'epochs', 'num_users', 'frac', 'iid',
          'dirichlet_alpha', 'norm', 'local_ep', 'local_bs', 'optimizer',
-         'lr', 'test_interval'],
+         'lr', 'defense', 'defense_byzantine_clients',
+         'trimmed_mean_trim_ratio', 'shieldfl_similarity_threshold',
+         'pdfl_similarity_threshold', 'pritrust_audit_layers',
+         'pritrust_c_norm', 'pritrust_zeta',
+         'pritrust_theta_tem', 'pritrust_theta_spa', 'pritrust_gamma',
+         'pritrust_r_max', 'pritrust_rho', 'pritrust_kappa',
+         'pritrust_security_bits',
+         'attack', 'malicious_ratio', 'test_interval'],
     )
 
 
@@ -93,6 +102,7 @@ def get_run_paths(run_name):
         'metrics': SAVE_OBJECTS_DIR / f'{run_name}.pkl',
         'loss_plot': SAVE_DIR / f'{run_name}_loss.png',
         'acc_plot': SAVE_DIR / f'{run_name}_acc.png',
+        'asr_plot': SAVE_DIR / f'{run_name}_asr.png',
         'temp_log': LOG_DIR / f'tmp_{run_name}.log',
         'final_log': LOG_DIR / f'{run_name}.log',
     }
@@ -123,14 +133,24 @@ def main():
         device = get_device(args)
         args.device = str(device)
         args.seed = set_seed(args.seed)
+        args.defense = normalize_defense_name(args.defense)
         LOGGER.info('Using device: %s', device)
         log_args(args)
 
         # load dataset and user groups
         train_dataset, test_dataset, user_groups = get_dataset(args)
+        malicious_clients = select_malicious_clients(args)
+        LOGGER.info(
+            'Attack configuration: attack=%s | malicious_ratio=%.2f | '
+            'malicious_clients=%s/%s %s',
+            args.attack, args.malicious_ratio, len(malicious_clients),
+            args.num_users, sorted(malicious_clients))
         local_updates = {
             int(user_id): LocalUpdate(args=args, dataset=train_dataset,
-                                      idxs=idxs, logger=tb_logger)
+                                      idxs=idxs, logger=tb_logger,
+                                      client_id=int(user_id),
+                                      is_malicious=(
+                                          int(user_id) in malicious_clients))
             for user_id, idxs in user_groups.items()
         }
 
@@ -167,8 +187,10 @@ def main():
         global_weights = global_model.state_dict()
 
         # Training
-        test_epochs, test_accuracy, test_losses = [], [], []
-        best_test_acc, best_test_epoch = 0.0, 0
+        test_epochs, mta_accuracy, test_losses = [], [], []
+        attack_success_rates = []
+        best_mta_acc, best_mta_epoch = 0.0, 0
+        aggregation_state = {}
 
         for epoch in range(args.epochs):
             round_start_time = time.time()
@@ -180,13 +202,20 @@ def main():
 
             global_model.train()
             m = max(int(args.frac * args.num_users), 1)
-            idxs_users = np.random.choice(
-                range(args.num_users), m, replace=False)
+            idxs_users = sample_round_clients(args, m, malicious_clients)
+            selected_client_ids_ordered = [int(idx) for idx in idxs_users]
             selected_user_ids = sorted(int(idx) for idx in idxs_users)
+            selected_malicious_flags = []
+            selected_malicious_ids = []
 
             for user_position, idx in enumerate(idxs_users, start=1):
                 user_start_time = time.time()
-                local_model = local_updates[int(idx)]
+                user_id = int(idx)
+                local_model = local_updates[user_id]
+                is_malicious = user_id in malicious_clients
+                selected_malicious_flags.append(is_malicious)
+                if is_malicious:
+                    selected_malicious_ids.append(user_id)
                 w, _ = local_model.update_weights(
                     model=copy.deepcopy(global_model),
                     global_round=current_epoch)
@@ -199,9 +228,15 @@ def main():
                         current_epoch, args.epochs, user_position, m,
                         int(idx), time.time() - user_start_time)
 
+            local_weights = apply_update_attack(
+                args, global_weights, local_weights, local_sample_counts,
+                selected_malicious_flags)
+
             # update global weights
-            global_weights = average_weights(local_weights,
-                                             local_sample_counts)
+            global_weights, defense_info = aggregate_weights(
+                args, global_weights, local_weights, local_sample_counts,
+                client_ids=selected_client_ids_ordered,
+                state=aggregation_state)
 
             # update global weights
             global_model.load_state_dict(global_weights)
@@ -212,14 +247,17 @@ def main():
                  current_epoch == args.epochs)
             )
             if should_test:
-                test_acc, test_loss = test_inference(
+                mta_acc, test_loss = test_inference(
+                    args, global_model, test_dataset)
+                asr = test_attack_success_rate(
                     args, global_model, test_dataset)
                 test_epochs.append(current_epoch)
-                test_accuracy.append(test_acc)
+                mta_accuracy.append(mta_acc)
                 test_losses.append(test_loss)
-                if test_acc > best_test_acc:
-                    best_test_acc = test_acc
-                    best_test_epoch = current_epoch
+                attack_success_rates.append(asr)
+                if mta_acc > best_mta_acc:
+                    best_mta_acc = mta_acc
+                    best_mta_epoch = current_epoch
 
             now = time.time()
             round_time = now - round_start_time
@@ -231,18 +269,42 @@ def main():
                 m, args.num_users)
             if m < args.num_users:
                 selected_users_summary += ' {}'.format(selected_user_ids)
+            if has_attack(args):
+                selected_users_summary += (
+                    ' | Malicious Selected: {} {}'.format(
+                        len(selected_malicious_ids),
+                        sorted(selected_malicious_ids))
+                )
 
             round_summary = (
                 'Round Summary : {}/{} | {}'.format(
                     current_epoch, args.epochs, selected_users_summary)
             )
+            if args.defense != 'fedavg':
+                defense_summary = (
+                    ' | Defense: {} | Defense Selected: {}/{}'.format(
+                        defense_info.get('defense', args.defense),
+                        defense_info.get('selected_count', m), m)
+                )
+                if 'fallback' in defense_info:
+                    defense_summary += ' | Defense Fallback: {}'.format(
+                        defense_info['fallback'])
+                if args.verbose and 'selected_clients' in defense_info:
+                    defense_summary += ' {}'.format(
+                        defense_info['selected_clients'])
+                if args.verbose and 'audited_layers' in defense_info:
+                    defense_summary += ' | Audited Layers: {}'.format(
+                        defense_info['audited_layers'])
+                round_summary += defense_summary
             if should_test:
                 round_summary += (
-                    ' | Test Loss: {:.4f} | Test Accuracy: {:.2f}% | '
-                    'Best Accuracy: {:.2f}% @ Round {}'.format(
-                        test_loss, 100*test_acc, 100*best_test_acc,
-                        best_test_epoch)
+                    ' | Test Loss: {:.4f} | MTA Acc: {:.2f}% | '
+                    'Best MTA Acc: {:.2f}% @ Round {}'.format(
+                        test_loss, 100*mta_acc, 100*best_mta_acc,
+                        best_mta_epoch)
                 )
+                if asr is not None:
+                    round_summary += ' | ASR: {:.2f}%'.format(100*asr)
             round_summary += (
                 ' | LR: {:.6f} | Progress: {} | Round Time: {} | '
                 'Elapsed Time: {}'.format(
@@ -253,31 +315,48 @@ def main():
             LOGGER.info(round_summary)
 
         if not test_epochs or test_epochs[-1] != args.epochs:
-            test_acc, test_loss = test_inference(
+            mta_acc, test_loss = test_inference(
                 args, global_model, test_dataset)
+            asr = test_attack_success_rate(args, global_model, test_dataset)
             test_epochs.append(args.epochs)
-            test_accuracy.append(test_acc)
+            mta_accuracy.append(mta_acc)
             test_losses.append(test_loss)
-            if test_acc > best_test_acc:
-                best_test_acc = test_acc
-                best_test_epoch = args.epochs
+            attack_success_rates.append(asr)
+            if mta_acc > best_mta_acc:
+                best_mta_acc = mta_acc
+                best_mta_epoch = args.epochs
         else:
-            test_acc = test_accuracy[-1]
+            mta_acc = mta_accuracy[-1]
             test_loss = test_losses[-1]
+            asr = attack_success_rates[-1]
 
-        test_accuracy_percent = [100*acc for acc in test_accuracy]
+        mta_accuracy_percent = [100*acc for acc in mta_accuracy]
+        asr_percent = [
+            None if rate is None else 100*rate
+            for rate in attack_success_rates
+        ]
 
         LOGGER.info(' \n Results after %s global rounds of training:',
                     args.epochs)
-        LOGGER.info("|---- Test Accuracy: {:.2f}%".format(100*test_acc))
-        LOGGER.info("|---- Best Test Accuracy: {:.2f}% @ Round {}".format(
-            100*best_test_acc, best_test_epoch))
+        LOGGER.info("|---- MTA Acc: {:.2f}%".format(100*mta_acc))
+        LOGGER.info("|---- Best MTA Acc: {:.2f}% @ Round {}".format(
+            100*best_mta_acc, best_mta_epoch))
+        if asr is not None:
+            LOGGER.info("|---- ASR: {:.2f}%".format(100*asr))
 
         # Saving the test metrics:
         file_name = run_paths['metrics']
 
         with open(file_name, 'wb') as f:
-            pickle.dump([test_epochs, test_losses, test_accuracy], f)
+            pickle.dump({
+                'args': vars(args),
+                'epochs': test_epochs,
+                'test_losses': test_losses,
+                'test_accuracy': mta_accuracy,
+                'mta_accuracy': mta_accuracy,
+                'attack_success_rates': attack_success_rates,
+                'asr': attack_success_rates,
+            }, f)
         LOGGER.info('Saved test metrics: %s', file_name)
 
         # Plot Test Loss curve
@@ -294,21 +373,36 @@ def main():
 
         # Plot Test Accuracy curve
         plt.figure()
-        plt.title('Test Accuracy vs Communication Rounds')
-        plt.plot(test_epochs, test_accuracy_percent, marker='o',
-                 label='Test')
-        plt.ylabel('Accuracy (%)')
+        plt.title('MTA Accuracy vs Communication Rounds')
+        plt.plot(test_epochs, mta_accuracy_percent, marker='o',
+                 label='MTA')
+        plt.ylabel('MTA accuracy (%)')
         plt.xlabel('Communication rounds')
         plt.legend()
         plt.tight_layout()
         acc_plot_path = run_paths['acc_plot']
         plt.savefig(acc_plot_path)
         plt.close()
-        LOGGER.info('Saved accuracy figure: %s', acc_plot_path)
+        LOGGER.info('Saved MTA accuracy figure: %s', acc_plot_path)
+
+        if any(rate is not None for rate in attack_success_rates):
+            plt.figure()
+            plt.title('ASR vs Communication Rounds')
+            plt.plot(test_epochs, asr_percent, color='m', marker='o',
+                     label='ASR')
+            plt.ylabel('ASR (%)')
+            plt.xlabel('Communication rounds')
+            plt.legend()
+            plt.tight_layout()
+            asr_plot_path = run_paths['asr_plot']
+            plt.savefig(asr_plot_path)
+            plt.close()
+            LOGGER.info('Saved ASR figure: %s', asr_plot_path)
 
         LOGGER.info('Test epochs array: %s', test_epochs)
-        LOGGER.info('Test accuracy percent array by test epoch: %s',
-                    test_accuracy_percent)
+        LOGGER.info('MTA accuracy percent array by test epoch: %s',
+                    mta_accuracy_percent)
+        LOGGER.info('ASR percent array by test epoch: %s', asr_percent)
         LOGGER.info('Test loss array by test epoch: %s', test_losses)
 
         LOGGER.info('\n Total Run Time: %s',
