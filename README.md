@@ -140,6 +140,23 @@ test round: label-flip ASR is the rate of true source-class test samples
 predicted as the target class, and backdoor ASR is the rate of triggered
 non-target test samples predicted as the target class.
 
+### Efficiency Evaluation
+
+The experiment runner can launch the online efficiency jobs for the paper table:
+
+```
+python scripts/run_experiments.py efficiency --gpus 0
+python scripts/run_experiments.py report --no-plots
+```
+
+Efficiency mode runs benign FedAvg, ShieldFL, PDFL, and PriTrust-FL jobs on
+MNIST and CIFAR-10. Each job runs 40 rounds by default, and the report averages
+client upload size, server audit time, aggregation time, and online round time
+over rounds 10-40. The timing data is saved in each run pickle under
+`round_metrics`; communication sizes are computed from the configured protocol
+encodings (`--efficiency-fedavg-bits`, `--efficiency-share-bits`, and
+`--efficiency-he-ciphertext-bits`).
+
 You can change the default values of other parameters to simulate different conditions. Refer to the options section.
 
 ## Options

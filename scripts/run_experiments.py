@@ -10,7 +10,7 @@ artifacts from the saved pickles/logs:
     * untargeted 30% worst-case table
     * label-flip and backdoor ASR/MTA figures
     * targeted 30% worst-case table
-    * plaintext-code efficiency tables
+    * online efficiency table for MNIST and CIFAR-10
     * sorted raw metrics/log export
 
 Typical server usage from the repo root:
@@ -23,8 +23,9 @@ Useful split workflow:
     python3 scripts/run_experiments.py report
 
 The default pipeline runs one seed and the repo's plaintext training/defense
-logic only. Efficiency tables are filled from the current plaintext code path,
-not from homomorphic encryption or secret-sharing protocol costs.
+logic only. Efficiency timing is measured from the current online code path;
+communication sizes are computed from the protocol encodings used in the paper
+comparison.
 
 The runner is resumable: before dispatching a config, it scans
 ``save/objects/*.pkl`` and skips matching completed runs.
@@ -78,7 +79,8 @@ METHODS = [
     'pdfl',
     'pritrust_fl',
 ]
-EFFICIENCY_METHODS = ['shieldfl', 'pdfl', 'pritrust_fl']
+EFFICIENCY_METHODS = ['fedavg', 'shieldfl', 'pdfl', 'pritrust_fl']
+EFFICIENCY_DATASETS = ['mnist', 'cifar']
 UPDATED_DEFENSE_METHODS = ['shieldfl', 'pdfl', 'pritrust_fl']
 METHOD_LABELS = {
     'fedavg': 'FedAvg',
@@ -119,6 +121,11 @@ NUM_USERS = 100
 CLIENT_FRAC = 0.1
 LOCAL_EPOCHS = 1
 NA = 'N/A'
+EFFICIENCY_AVG_START_ROUND = 10
+EFFICIENCY_AVG_END_ROUND = 40
+FEDAVG_UPLOAD_BITS = 32
+SECRET_SHARE_BITS = 64
+HE_CIPHERTEXT_BITS = 4096
 
 PRITRUST_ARG_KEYS = [
     'pritrust_audit_layers',
@@ -156,7 +163,7 @@ DEFENSE_LINE_PATTERNS = {
 }
 XX_RE = re.compile(r'XX\.XX')
 TABLE_VALUE_RE = re.compile(
-    r'(\\textbf\{)?(?:XX\.XX|N/A|-?[0-9]+(?:\.[0-9]+)?)(\})?'
+    r'(\\textbf\{)?(?:XX\.XX|--|N/A|-?[0-9]+(?:\.[0-9]+)?)(\})?'
 )
 ROUND_TIME_RE = re.compile(r'Round Time:\s*([0-9]+):([0-9]{2}):([0-9]{2})')
 
@@ -305,69 +312,36 @@ Table~\ref{tab:targeted_30} summarizes the clean test accuracy and ASR at the hi
 
 
 % ==================================================================
-\subsection{Efficiency Evaluation}\label{subsec:exp_efficiency}
+\subsection{Efficiency Evaluation}\label{subsec:efficiency}
 
-This subsection compares PriTrust-FL with the two privacy-preserving baselines, ShieldFL and PDFL, on three efficiency metrics. The metrics are client upload size per round, average server-side audit time per round, and average end-to-end online round time. The reported values are averaged over the first 50 benign training rounds on CIFAR-10 with $m=100$ clients and $n=10$ selected per round.
+This subsection evaluates the online efficiency of PriTrust-FL. Since PriTrust-FL relies on additive secret sharing, secure multiplication, secure comparison, stochastic layer auditing, and trust-weighted secure aggregation, it is important to measure the additional online cost introduced by the privacy-preserving defense. We report the average client upload size, server-side audit time, aggregation time, and online round time. The reported online time excludes offline Beaver triple preprocessing because the triples are independent of client updates and can be generated before training starts. Each reported value is averaged over the  $10$~$40$ online rounds.
 
-\subsubsection{Client Upload Size per Round}
+Table~\ref{tab:efficiency1} reports the efficiency results on MNIST and CIFAR-10. FedAvg has the lowest communication and computation cost because it does not provide update privacy or poisoning defense. ShieldFL incurs larger communication overhead because homomorphic encryption expands each encrypted update element. PDFL and PriTrust-FL use secret sharing and therefore avoid expensive client-side public-key encryption. Compared with PDFL, PriTrust-FL restricts secure auditing to the selected learnable tensors rather than evaluating the whole model in every round. This reduces the online secure-computation cost while preserving robustness against poisoning attacks. The results show that PriTrust-FL introduces moderate online overhead and remains practical for the evaluated federated learning settings.
 
-Table~\ref{tab:upload_size} reports the per-round upload size of one selected client. ShieldFL transmits the largest payload because each Paillier ciphertext is much larger than a secret share. PDFL and PriTrust-FL both rely on additive secret sharing over $\mathbb{Z}_{2^{\ell}}$ and exchange comparable amounts of data. PriTrust-FL adds a small constant-size auxiliary header for the trust-related side information, which is negligible compared to the model share.
-
-\begin{table}[!t]
+\begin{table*}[t]
+\caption{Online efficiency comparison. Beaver triple preprocessing is excluded from the online time.}
+\label{tab:efficiency1}
 \centering
-\caption{Client upload size per round on CIFAR-10. Lower is better.}
-\label{tab:upload_size}
-\renewcommand{\arraystretch}{1.15}
-\begin{tabular}{lc}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llccccc}
 \toprule
-\textbf{Method} & \textbf{Upload size per round} \\
+Method & Dataset & Client upload per round & Audit time per round & Aggregation time per round & Online round time & Audited layer ratio \\
 \midrule
-ShieldFL    & XX.XX MB \\
-PDFL        & XX.XX MB \\
-\textbf{PriTrust-FL} & \textbf{XX.XX MB} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsubsection{Server-Side Audit Time per Round}
-
-Table~\ref{tab:audit_time} reports the average server-side audit time per round. The audit phase covers similarity scoring for the cosine-based baselines and median-norm pre-filtering, indicator computation, and trust update for PriTrust-FL. PriTrust-FL audit time grows with the audit budget $K_t$, but remains far below the cost of homomorphic operations in ShieldFL.
-
-\begin{table}[!t]
-\centering
-\caption{Average server-side audit time per round on CIFAR-10. Lower is better.}
-\label{tab:audit_time}
-\renewcommand{\arraystretch}{1.15}
-\begin{tabular}{lc}
-\toprule
-\textbf{Method} & \textbf{Audit time per round} \\
+FedAvg & MNIST & XX.XX KB & XX.XX s & XX.XX s & XX.XX s & N/A \\
+ShieldFL & MNIST & XX.XX KB & XX.XX s & XX.XX s & XX.XX s & Full model \\
+PDFL & MNIST & XX.XX KB & XX.XX s & XX.XX s & XX.XX s & Full model \\
+PriTrust-FL & MNIST & XX.XX KB & XX.XX s & XX.XX s & XX.XX s & $K_t/L$ \\
 \midrule
-ShieldFL    & XX.XX s \\
-PDFL        & XX.XX s \\
-\textbf{PriTrust-FL} & \textbf{XX.XX s} \\
+FedAvg & CIFAR-10 & XX.XX MB & XX.XX s & XX.XX s & XX.XX s & N/A \\
+ShieldFL & CIFAR-10 & XX.XX MB & XX.XX s & XX.XX s & XX.XX s & Full model \\
+PDFL & CIFAR-10 & XX.XX MB & XX.XX s & XX.XX s & XX.XX s & Full model \\
+PriTrust-FL & CIFAR-10 & XX.XX MB & XX.XX s & XX.XX s & XX.XX s & $K_t/L$ \\
 \bottomrule
-\end{tabular}
-\end{table}
+\end{tabular}%
+}
+\end{table*}
 
-\subsubsection{End-to-End Online Round Time}
-
-Table~\ref{tab:e2e_time} reports the end-to-end online round time, which includes local training on each selected client, secret-share exchange, server-side audit, and aggregation. The values exclude offline Beaver triple preprocessing. PriTrust-FL achieves an end-to-end round time comparable to PDFL and substantially lower than ShieldFL. The audit overhead introduced by median-norm pre-filtering and the dual-anchor design is offset by the efficiency of the underlying secret-sharing protocols.
-
-\begin{table}[!t]
-\centering
-\caption{Average end-to-end online round time on CIFAR-10. Lower is better.}
-\label{tab:e2e_time}
-\renewcommand{\arraystretch}{1.15}
-\begin{tabular}{lc}
-\toprule
-\textbf{Method} & \textbf{Online round time} \\
-\midrule
-ShieldFL    & XX.XX s \\
-PDFL        & XX.XX s \\
-\textbf{PriTrust-FL} & \textbf{XX.XX s} \\
-\bottomrule
-\end{tabular}
-\end{table}
+For PriTrust-FL, the client upload cost comes from sending two additive shares of each local update to Server A and Server B. If each model update has $d$ parameters and each share is encoded with $b_{\mathrm{share}}$ bits, the total upload cost of one client is $2db_{\mathrm{share}}/8$ bytes. The server-side audit time includes norm-square computation, median-norm pre-filtering, anchor construction, projection computation, secure comparison, consistency scoring, and adaptive filtering. The aggregation time includes trust-weighted aggregation over the retained secret-shared updates. The online round time includes local training, share generation, online auditing, and secure aggregation. These measurements show the practical cost of adding privacy-preserving robust auditing to federated learning.
 """
 
 
@@ -515,11 +489,12 @@ def make_main_configs(seeds, methods, only_dataset, attacks, test_interval):
 
 def make_efficiency_configs(seeds, methods, iid, rounds, test_interval):
     configs = []
-    for method in methods:
-        for seed in seeds:
-            configs.append(base_config(
-                'cifar', iid, method, 'none', 0.0, seed, rounds,
-                test_interval))
+    for dataset in EFFICIENCY_DATASETS:
+        for method in methods:
+            for seed in seeds:
+                configs.append(base_config(
+                    dataset, iid, method, 'none', 0.0, seed, rounds,
+                    test_interval))
     return configs
 
 
@@ -627,6 +602,7 @@ def load_pkl(pkl_path):
         'key': config_key(cfg),
         'final_mta': float(accuracy[-1]),
         'final_asr': final_asr,
+        'round_metrics': data.get('round_metrics') or [],
         'pkl': pkl_path,
         'log': log_path if log_path.exists() else None,
         'mtime': pkl_path.stat().st_mtime,
@@ -1314,120 +1290,63 @@ def make_plots(runs, seeds, allow_partial=False):
         FIG_DIR / 'backdoor_sweep.pdf', seeds, allow_partial)
 
 
-def get_cifar_state_tensor_bytes():
-    sys.path.insert(0, str(SRC_DIR))
+def _ensure_src_path():
+    src_path = str(SRC_DIR)
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+
+
+def build_model_for_dataset(dataset):
+    _ensure_src_path()
     from types import SimpleNamespace
-    from models import ResNet18Cifar
+    from models import CNNMnist, ResNet18Cifar
 
-    model = ResNet18Cifar(SimpleNamespace(norm='batch_norm'))
-    return sum(
-        tensor.numel() * tensor.element_size()
-        for tensor in model.state_dict().values()
-    )
-
-
-def upload_size_mb(args):
-    try:
-        byte_count = get_cifar_state_tensor_bytes()
-    except Exception as exc:
-        print(f'warning: could not compute model size for upload table: {exc}')
-        return {method: None for method in EFFICIENCY_METHODS}
-
-    # Current repo code uploads plaintext state_dict tensors, without the
-    # Paillier ciphertexts or additive shares described by privacy protocols.
-    plaintext_mb = byte_count / (1024.0 * 1024.0)
-    return {
-        method: plaintext_mb
-        for method in EFFICIENCY_METHODS
-    }
+    dataset = str(dataset).lower()
+    if dataset == 'mnist':
+        return CNNMnist(SimpleNamespace(norm=DEFAULT_NORM[dataset]))
+    if dataset == 'cifar':
+        return ResNet18Cifar(SimpleNamespace(norm=DEFAULT_NORM[dataset]))
+    raise ValueError('unsupported efficiency dataset: {}'.format(dataset))
 
 
-def benchmark_audit_times(args):
-    if args.skip_audit_benchmark:
-        return {method: None for method in EFFICIENCY_METHODS}
+def model_parameter_count(dataset):
+    model = build_model_for_dataset(dataset)
+    return sum(parameter.numel() for parameter in model.parameters())
 
-    cache = read_efficiency_cache()
-    cache_key = {
-        'mode': 'current_plaintext_code',
-        'audit_benchmark_rounds': args.audit_benchmark_rounds,
-        'audit_benchmark_clients': args.audit_benchmark_clients,
-    }
-    if (not args.refresh_efficiency and
-            cache.get('cache_key') == cache_key and
-            'audit_time_s' in cache):
-        return {
-            method: cache['audit_time_s'].get(method)
-            for method in EFFICIENCY_METHODS
-        }
 
-    try:
-        sys.path.insert(0, str(SRC_DIR))
-        import torch
-        from types import SimpleNamespace
-        from models import ResNet18Cifar
-        from defenses import aggregate_weights
-    except Exception as exc:
-        print(f'warning: could not run audit benchmark: {exc}')
-        return {method: None for method in EFFICIENCY_METHODS}
+def protocol_upload_bits_per_parameter(method, args):
+    method = normalize_method(method)
+    if method == 'fedavg':
+        return int(getattr(args, 'efficiency_fedavg_bits',
+                           FEDAVG_UPLOAD_BITS))
+    if method in ('pdfl', 'pritrust_fl'):
+        share_bits = int(getattr(args, 'efficiency_share_bits',
+                                 SECRET_SHARE_BITS))
+        return 2 * share_bits
+    if method == 'shieldfl':
+        return int(getattr(args, 'efficiency_he_ciphertext_bits',
+                           HE_CIPHERTEXT_BITS))
+    return int(getattr(args, 'efficiency_fedavg_bits', FEDAVG_UPLOAD_BITS))
 
-    torch.manual_seed(1234)
-    model = ResNet18Cifar(SimpleNamespace(norm='batch_norm'))
-    global_weights = model.state_dict()
-    clients = int(args.audit_benchmark_clients)
-    local_weights = []
-    for client_idx in range(clients):
-        client_state = {}
-        scale = 1e-4 * float(client_idx + 1)
-        for key, value in global_weights.items():
-            if value.is_floating_point():
-                noise = torch.randn_like(value, dtype=torch.float32) * scale
-                client_state[key] = value.detach().clone() + noise.to(
-                    dtype=value.dtype)
-            else:
-                client_state[key] = value.detach().clone()
-        local_weights.append(client_state)
 
-    sample_counts = [500 for _ in range(clients)]
-    client_ids = list(range(clients))
-    audit_times = {}
-    for method in EFFICIENCY_METHODS:
-        bench_args = SimpleNamespace(
-            defense=method,
-            malicious_ratio=0.0,
-            attack='none',
-            defense_byzantine_clients=None,
-            trimmed_mean_trim_ratio=None,
-            shieldfl_similarity_threshold=0.0,
-            pdfl_similarity_threshold=0.0,
-            pritrust_audit_layers=None,
-            pritrust_c_norm=2.0,
-            pritrust_zeta=0.1,
-            pritrust_theta_tem=1.5,
-            pritrust_theta_spa=1.5,
-            pritrust_gamma=0.8,
-            pritrust_r_max=0.3,
-            pritrust_rho=0.7,
-            pritrust_kappa=0.2,
-            pritrust_security_bits=128,
-            seed=1,
-        )
-        state = {}
-        timings = []
-        for round_idx in range(args.audit_benchmark_rounds + 2):
-            start = time.perf_counter()
-            aggregate_weights(
-                bench_args, global_weights, local_weights, sample_counts,
-                client_ids=client_ids, state=state)
-            elapsed = time.perf_counter() - start
-            if round_idx >= 2:
-                timings.append(elapsed)
-        audit_times[method] = statistics.mean(timings) if timings else None
-        print(f'audit benchmark {method}: {audit_times[method]:.4f}s')
+def client_upload_bytes(args):
+    result = {}
+    for dataset in EFFICIENCY_DATASETS:
+        try:
+            parameter_count = model_parameter_count(dataset)
+        except Exception as exc:
+            print('warning: could not compute {} upload size: {}'.format(
+                dataset, exc))
+            result[dataset] = {
+                method: None for method in EFFICIENCY_METHODS
+            }
+            continue
 
-    cache['cache_key'] = cache_key
-    cache['audit_time_s'] = audit_times
-    write_efficiency_cache(cache)
-    return audit_times
+        result[dataset] = {}
+        for method in EFFICIENCY_METHODS:
+            bits = protocol_upload_bits_per_parameter(method, args)
+            result[dataset][method] = parameter_count * bits / 8.0
+    return result
 
 
 def read_efficiency_cache():
@@ -1463,34 +1382,156 @@ def parse_round_times(log_path, limit):
     return times
 
 
-def e2e_round_times(runs, args):
+def efficiency_round_window(args):
+    return (
+        int(getattr(args, 'efficiency_start_round',
+                    EFFICIENCY_AVG_START_ROUND)),
+        int(getattr(args, 'efficiency_end_round',
+                    EFFICIENCY_AVG_END_ROUND)),
+    )
+
+
+def find_efficiency_record(runs, dataset, method, seed, args):
+    preferred = base_config(
+        dataset, args.efficiency_iid, method, 'none', 0.0, seed,
+        args.efficiency_rounds, test_interval=0)
+    record = runs.get(config_key(preferred))
+    if record is not None:
+        return record
+
+    fallback = base_config(
+        dataset, args.efficiency_iid, method, 'none', 0.0, seed,
+        DEFAULT_EPOCHS[dataset], test_interval=0)
+    return runs.get(config_key(fallback))
+
+
+def round_metric_values(record, metric_name, start_round, end_round):
+    values = []
+    for item in record.get('round_metrics') or []:
+        try:
+            round_number = int(item.get('round'))
+        except (TypeError, ValueError):
+            continue
+        if round_number < start_round or round_number > end_round:
+            continue
+        value = item.get(metric_name)
+        if value is None:
+            continue
+        values.append(float(value))
+    return values
+
+
+def average_round_metric(runs, args, metric_name):
+    start_round, end_round = efficiency_round_window(args)
     result = {}
-    for method in EFFICIENCY_METHODS:
-        per_seed = []
-        for seed in args.seeds:
-            preferred = base_config(
-                'cifar', args.efficiency_iid, method, 'none', 0.0, seed,
-                args.efficiency_rounds, test_interval=0)
-            record = runs.get(config_key(preferred))
-            if record is None:
-                fallback = base_config(
-                    'cifar', args.efficiency_iid, method, 'none', 0.0, seed,
-                    DEFAULT_EPOCHS['cifar'], test_interval=0)
-                record = runs.get(config_key(fallback))
-            if record is None:
+    for dataset in EFFICIENCY_DATASETS:
+        result[dataset] = {}
+        for method in EFFICIENCY_METHODS:
+            per_seed = []
+            for seed in args.seeds:
+                record = find_efficiency_record(
+                    runs, dataset, method, seed, args)
+                if record is None:
+                    continue
+                values = round_metric_values(
+                    record, metric_name, start_round, end_round)
+                if (not values and metric_name == 'online_round_time_s' and
+                        record.get('log') is not None):
+                    logged_times = parse_round_times(record['log'], end_round)
+                    values = [
+                        float(value)
+                        for round_number, value in enumerate(logged_times,
+                                                             start=1)
+                        if start_round <= round_number <= end_round
+                    ]
+                if values:
+                    per_seed.append(statistics.mean(values))
+            result[dataset][method] = (
+                statistics.mean(per_seed) if per_seed else None)
+    return result
+
+
+def collect_audited_layer_pairs(runs, args, dataset, method):
+    start_round, end_round = efficiency_round_window(args)
+    pairs = []
+    for seed in args.seeds:
+        record = find_efficiency_record(runs, dataset, method, seed, args)
+        if record is None:
+            continue
+        for item in record.get('round_metrics') or []:
+            try:
+                round_number = int(item.get('round'))
+            except (TypeError, ValueError):
                 continue
-            round_times = parse_round_times(record['log'], args.efficiency_rounds)
-            if round_times:
-                per_seed.append(statistics.mean(round_times))
-        result[method] = statistics.mean(per_seed) if per_seed else None
+            if round_number < start_round or round_number > end_round:
+                continue
+            audited = item.get('audited_layer_count')
+            total = item.get('auditable_layer_count')
+            if audited is not None and total:
+                pairs.append((int(audited), int(total)))
+    return pairs
+
+
+def default_pritrust_audited_layer_pair(dataset, args):
+    try:
+        _ensure_src_path()
+        from types import SimpleNamespace
+        from defenses import (
+            _pritrust_auditable_keys,
+            _select_pritrust_audited_layers,
+        )
+        model = build_model_for_dataset(dataset)
+        keys = _pritrust_auditable_keys(model.state_dict())
+        pritrust_args = SimpleNamespace(**pritrust_params_with_defaults())
+        audited = _select_pritrust_audited_layers(
+            pritrust_args, keys, list(range(10)), 1)
+    except Exception:
+        return None
+    return len(audited), len(keys)
+
+
+def audited_layer_ratio_metrics(runs, args):
+    result = {}
+    for dataset in EFFICIENCY_DATASETS:
+        result[dataset] = {}
+        for method in EFFICIENCY_METHODS:
+            if method == 'fedavg':
+                result[dataset][method] = 'N/A'
+            elif method in ('shieldfl', 'pdfl'):
+                result[dataset][method] = 'Full model'
+            else:
+                pairs = collect_audited_layer_pairs(
+                    runs, args, dataset, method)
+                if not pairs:
+                    fallback = default_pritrust_audited_layer_pair(
+                        dataset, args)
+                    pairs = [fallback] if fallback else []
+                if not pairs:
+                    result[dataset][method] = r'$K_t/L$'
+                else:
+                    audited = int(round(statistics.mean(
+                        pair[0] for pair in pairs)))
+                    total = int(round(statistics.mean(
+                        pair[1] for pair in pairs)))
+                    result[dataset][method] = '${}/{}$'.format(
+                        audited, total)
     return result
 
 
 def collect_efficiency_metrics(runs, args):
     metrics = {
-        'upload_size_mb': upload_size_mb(args),
-        'audit_time_s': benchmark_audit_times(args),
-        'e2e_time_s': e2e_round_times(runs, args),
+        'client_upload_bytes': client_upload_bytes(args),
+        'server_audit_time_s': average_round_metric(
+            runs, args, 'server_audit_time_s'),
+        'aggregation_time_s': average_round_metric(
+            runs, args, 'aggregation_time_s'),
+        'online_round_time_s': average_round_metric(
+            runs, args, 'online_round_time_s'),
+        'audited_layer_ratio': audited_layer_ratio_metrics(runs, args),
+        'round_window': {
+            'start': efficiency_round_window(args)[0],
+            'end': efficiency_round_window(args)[1],
+        },
     }
     cache = read_efficiency_cache()
     cache.update(metrics)
@@ -1498,11 +1539,25 @@ def collect_efficiency_metrics(runs, args):
     return metrics
 
 
-def format_efficiency_value(metrics, table_key, method):
-    value = metrics.get(table_key, {}).get(method)
+def nested_metric_value(metrics, table_key, dataset, method):
+    return metrics.get(table_key, {}).get(dataset, {}).get(method)
+
+
+def format_efficiency_value(metrics, table_key, dataset, method):
+    value = nested_metric_value(metrics, table_key, dataset, method)
     if value is None:
         return NA
     return f'{value:.2f}'
+
+
+def format_upload_value(metrics, dataset, method):
+    value = nested_metric_value(
+        metrics, 'client_upload_bytes', dataset, method)
+    if value is None:
+        return NA
+    if dataset == 'mnist':
+        return f'{value / 1024.0:.2f}'
+    return f'{value / (1024.0 * 1024.0):.2f}'
 
 
 def detect_defense(line):
@@ -1639,6 +1694,63 @@ def fill_targeted_30(text, runs, seeds, allow_partial):
     return text[:start] + ''.join(lines) + text[end:]
 
 
+def detect_efficiency_dataset(line):
+    if 'CIFAR-10' in line:
+        return 'cifar'
+    if 'MNIST' in line:
+        return 'mnist'
+    return None
+
+
+def replace_literal_table_cell(cell, value):
+    newline = '\n' if cell.endswith('\n') else ''
+    body = cell[:-1] if newline else cell
+    suffix = ''
+    if r'\\' in body:
+        body, suffix_tail = body.split(r'\\', 1)
+        suffix = r'\\' + suffix_tail
+    leading_match = re.match(r'\s*', body)
+    leading = leading_match.group(0) if leading_match else ''
+    spacer = ' ' if suffix else ''
+    return '{}{}{}{}{}'.format(leading, value, spacer, suffix, newline)
+
+
+def replace_efficiency_row(line, upload, audit, aggregation, online, ratio):
+    parts = line.split('&')
+    if len(parts) < 7:
+        return line
+    for index, value in zip([2, 3, 4, 5],
+                            [upload, audit, aggregation, online]):
+        parts[index] = replace_table_cell_value(parts[index], value)
+    parts[6] = replace_literal_table_cell(parts[6], ratio)
+    return '&'.join(parts)
+
+
+def fill_online_efficiency_table(text, metrics):
+    sliced = slice_table(text, 'efficiency1')
+    if sliced is None:
+        return text
+    start, end, block = sliced
+    lines = []
+    for line in block.splitlines(keepends=True):
+        method = detect_defense(line)
+        dataset = detect_efficiency_dataset(line)
+        if method in EFFICIENCY_METHODS and dataset in EFFICIENCY_DATASETS:
+            upload = format_upload_value(metrics, dataset, method)
+            audit = format_efficiency_value(
+                metrics, 'server_audit_time_s', dataset, method)
+            aggregation = format_efficiency_value(
+                metrics, 'aggregation_time_s', dataset, method)
+            online = format_efficiency_value(
+                metrics, 'online_round_time_s', dataset, method)
+            ratio = nested_metric_value(
+                metrics, 'audited_layer_ratio', dataset, method) or NA
+            line = replace_efficiency_row(
+                line, upload, audit, aggregation, online, ratio)
+        lines.append(line)
+    return text[:start] + ''.join(lines) + text[end:]
+
+
 def fill_efficiency_table(text, label, metrics, table_key):
     sliced = slice_table(text, label)
     if sliced is None:
@@ -1648,7 +1760,11 @@ def fill_efficiency_table(text, label, metrics, table_key):
     for line in block.splitlines(keepends=True):
         method = detect_defense(line)
         if method in EFFICIENCY_METHODS:
-            value = format_efficiency_value(metrics, table_key, method)
+            if table_key == 'client_upload_bytes':
+                value = format_upload_value(metrics, 'cifar', method)
+            else:
+                value = format_efficiency_value(metrics, table_key, 'cifar',
+                                                method)
             line = replace_table_values(line, method, [value])
         lines.append(line)
     return text[:start] + ''.join(lines) + text[end:]
@@ -1665,12 +1781,13 @@ def fill_latex_text(text, runs, seeds, efficiency_metrics,
     text = fill_untargeted_30(text, runs, seeds, allow_partial)
     text = fill_targeted_30(text, runs, seeds, allow_partial)
     if efficiency_metrics is not None:
+        text = fill_online_efficiency_table(text, efficiency_metrics)
         text = fill_efficiency_table(
-            text, 'upload_size', efficiency_metrics, 'upload_size_mb')
+            text, 'upload_size', efficiency_metrics, 'client_upload_bytes')
         text = fill_efficiency_table(
-            text, 'audit_time', efficiency_metrics, 'audit_time_s')
+            text, 'audit_time', efficiency_metrics, 'server_audit_time_s')
         text = fill_efficiency_table(
-            text, 'e2e_time', efficiency_metrics, 'e2e_time_s')
+            text, 'e2e_time', efficiency_metrics, 'online_round_time_s')
     return text
 
 
@@ -1917,27 +2034,49 @@ def build_parser():
         help=argparse.SUPPRESS)
     parser.add_argument(
         '--no-efficiency', '--no_efficiency', action='store_true',
-        help='skip the 50-round current-code efficiency jobs and tables')
+        help='skip the online efficiency jobs and table')
     parser.add_argument(
         '--efficiency-iid', '--efficiency_iid', type=int, default=1,
-        choices=[0, 1], help='CIFAR distribution for efficiency timing')
+        choices=[0, 1], help='data distribution for efficiency timing')
     parser.add_argument(
-        '--efficiency-rounds', '--efficiency_rounds', type=int, default=50,
-        help='benign CIFAR rounds used for online round-time averaging')
+        '--efficiency-rounds', '--efficiency_rounds', type=int,
+        default=EFFICIENCY_AVG_END_ROUND,
+        help='benign rounds to run for online efficiency timing')
+    parser.add_argument(
+        '--efficiency-start-round', '--efficiency_start_round', type=int,
+        default=EFFICIENCY_AVG_START_ROUND,
+        help='first round included in efficiency averages')
+    parser.add_argument(
+        '--efficiency-end-round', '--efficiency_end_round', type=int,
+        default=EFFICIENCY_AVG_END_ROUND,
+        help='last round included in efficiency averages')
+    parser.add_argument(
+        '--efficiency-fedavg-bits', '--efficiency_fedavg_bits', type=int,
+        default=FEDAVG_UPLOAD_BITS,
+        help='bits per uploaded FedAvg update parameter')
+    parser.add_argument(
+        '--efficiency-share-bits', '--efficiency_share_bits', type=int,
+        default=SECRET_SHARE_BITS,
+        help='bits per additive share for PDFL and PriTrust-FL uploads')
+    parser.add_argument(
+        '--efficiency-he-ciphertext-bits',
+        '--efficiency_he_ciphertext_bits', type=int,
+        default=HE_CIPHERTEXT_BITS,
+        help='bits per ShieldFL homomorphic-encryption ciphertext')
     parser.add_argument(
         '--audit-benchmark-rounds', '--audit_benchmark_rounds', type=int,
         default=50,
-        help='synthetic CIFAR aggregation rounds for audit-time benchmark')
+        help=argparse.SUPPRESS)
     parser.add_argument(
         '--audit-benchmark-clients', '--audit_benchmark_clients', type=int,
         default=10,
-        help='selected clients in the synthetic audit-time benchmark')
+        help=argparse.SUPPRESS)
     parser.add_argument(
         '--skip-audit-benchmark', '--skip_audit_benchmark',
-        action='store_true', help='leave audit-time table as N/A')
+        action='store_true', help=argparse.SUPPRESS)
     parser.add_argument(
         '--refresh-efficiency', '--refresh_efficiency', action='store_true',
-        help='ignore cached audit benchmark values')
+        help=argparse.SUPPRESS)
     return parser
 
 
@@ -1977,6 +2116,20 @@ def main():
         parser.error('--mnist-only-tasks-per-gpu must be at least 1')
     if args.mnist_only_tasks_per_gpu < args.tasks_per_gpu:
         args.mnist_only_tasks_per_gpu = args.tasks_per_gpu
+    if args.efficiency_start_round < 1:
+        parser.error('--efficiency-start-round must be at least 1')
+    if args.efficiency_end_round < args.efficiency_start_round:
+        parser.error('--efficiency-end-round must be greater than or equal '
+                     'to --efficiency-start-round')
+    if args.efficiency_rounds < args.efficiency_end_round:
+        parser.error('--efficiency-rounds must be at least '
+                     '--efficiency-end-round')
+    if args.efficiency_fedavg_bits < 1:
+        parser.error('--efficiency-fedavg-bits must be at least 1')
+    if args.efficiency_share_bits < 1:
+        parser.error('--efficiency-share-bits must be at least 1')
+    if args.efficiency_he_ciphertext_bits < 1:
+        parser.error('--efficiency-he-ciphertext-bits must be at least 1')
 
     if args.mode == 'sweep':
         cmd_sweep(args)

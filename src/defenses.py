@@ -4,6 +4,7 @@
 import copy
 import hashlib
 import math
+import time
 
 import torch
 
@@ -64,10 +65,13 @@ def aggregate_weights(args, global_weights, local_weights, sample_counts,
         client_ids = list(range(len(local_weights)))
 
     if defense == FEDAVG:
-        return average_weights(local_weights, sample_counts), {
+        aggregation_start = time.perf_counter()
+        aggregated = average_weights(local_weights, sample_counts)
+        aggregation_time_s = time.perf_counter() - aggregation_start
+        return aggregated, _with_efficiency_timing({
             'defense': FEDAVG,
             'selected_count': len(local_weights),
-        }
+        }, audit_time_s=0.0, aggregation_time_s=aggregation_time_s)
     if defense == KRUM:
         return _krum(args, global_weights, local_weights, sample_counts,
                      client_ids)
@@ -84,6 +88,14 @@ def aggregate_weights(args, global_weights, local_weights, sample_counts,
                             sample_counts, client_ids, state)
 
     raise ValueError('unsupported defense: {}'.format(defense))
+
+
+def _with_efficiency_timing(info, audit_time_s, aggregation_time_s):
+    info = dict(info)
+    info['server_audit_time_s'] = float(audit_time_s)
+    info['aggregation_time_s'] = float(aggregation_time_s)
+    info['server_online_time_s'] = float(audit_time_s + aggregation_time_s)
+    return info
 
 
 def _resolve_byzantine_count(args, num_clients, require_krum_feasible=False):
@@ -305,32 +317,47 @@ def _trimmed_mean(args, local_weights, sample_counts):
 
 def _shieldfl(args, global_weights, local_weights, sample_counts,
               client_ids, state):
+    audit_start = time.perf_counter()
     keys = _floating_keys(global_weights)
     if not keys:
-        return average_weights(local_weights, sample_counts), {
+        audit_time_s = time.perf_counter() - audit_start
+        aggregation_start = time.perf_counter()
+        aggregated = average_weights(local_weights, sample_counts)
+        aggregation_time_s = time.perf_counter() - aggregation_start
+        return aggregated, _with_efficiency_timing({
             'defense': SHIELDFL,
             'selected_count': len(local_weights),
             'fallback': 'no floating parameters',
-        }
+        }, audit_time_s, aggregation_time_s)
 
     _, normalized, norms, accepted = _plaintext_normalized_deltas(
         local_weights, global_weights, keys)
     if not accepted:
-        return average_weights(local_weights, sample_counts), {
+        audit_time_s = time.perf_counter() - audit_start
+        aggregation_start = time.perf_counter()
+        aggregated = average_weights(local_weights, sample_counts)
+        aggregation_time_s = time.perf_counter() - aggregation_start
+        return aggregated, _with_efficiency_timing({
             'defense': SHIELDFL,
             'selected_count': len(local_weights),
             'fallback': 'zero update vectors',
-        }
+            'audited_layer_count': len(keys),
+            'auditable_layer_count': len(keys),
+            'audited_layer_ratio': 1.0,
+        }, audit_time_s, aggregation_time_s)
 
     previous = state.get('shieldfl_previous_aggregate')
     if previous is None or previous.numel() != normalized.size(1):
         coefficients = [1.0 for _ in accepted]
+        audit_time_s = time.perf_counter() - audit_start
+        aggregation_start = time.perf_counter()
         aggregated, aggregate_direction, aggregate_scale = (
             _normalized_delta_update(global_weights, local_weights, keys,
                                      accepted, coefficients, normalized,
                                      norms))
+        aggregation_time_s = time.perf_counter() - aggregation_start
         state['shieldfl_previous_aggregate'] = aggregate_direction
-        return aggregated, {
+        return aggregated, _with_efficiency_timing({
             'defense': SHIELDFL,
             'selected_count': len(accepted),
             'selected_clients': [int(client_ids[position])
@@ -338,7 +365,10 @@ def _shieldfl(args, global_weights, local_weights, sample_counts,
             'rejected_count': len(local_weights) - len(accepted),
             'aggregation_scale': aggregate_scale,
             'initial_round': True,
-        }
+            'audited_layer_count': len(keys),
+            'auditable_layer_count': len(keys),
+            'audited_layer_ratio': 1.0,
+        }, audit_time_s, aggregation_time_s)
 
     previous_normalized, previous_norms = _safe_normalize(previous.view(1, -1))
     if float(previous_norms[0].item()) <= 0.0:
@@ -365,9 +395,12 @@ def _shieldfl(args, global_weights, local_weights, sample_counts,
         if fallback is None:
             fallback = 'zero confidence mass'
 
+    audit_time_s = time.perf_counter() - audit_start
+    aggregation_start = time.perf_counter()
     aggregated, aggregate_direction, aggregate_scale = (
         _normalized_delta_update(global_weights, local_weights, keys,
                                  accepted, coefficients, normalized, norms))
+    aggregation_time_s = time.perf_counter() - aggregation_start
     state['shieldfl_previous_aggregate'] = aggregate_direction
 
     info = {
@@ -380,29 +413,45 @@ def _shieldfl(args, global_weights, local_weights, sample_counts,
         'min_confidence': min(coefficients),
         'max_confidence': max(coefficients),
         'aggregation_scale': aggregate_scale,
+        'audited_layer_count': len(keys),
+        'auditable_layer_count': len(keys),
+        'audited_layer_ratio': 1.0,
     }
     if fallback is not None:
         info['fallback'] = fallback
-    return aggregated, info
+    return aggregated, _with_efficiency_timing(
+        info, audit_time_s, aggregation_time_s)
 
 
 def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
+    audit_start = time.perf_counter()
     keys = _floating_keys(global_weights)
     if not keys:
-        return average_weights(local_weights, sample_counts), {
+        audit_time_s = time.perf_counter() - audit_start
+        aggregation_start = time.perf_counter()
+        aggregated = average_weights(local_weights, sample_counts)
+        aggregation_time_s = time.perf_counter() - aggregation_start
+        return aggregated, _with_efficiency_timing({
             'defense': PDFL,
             'selected_count': len(local_weights),
             'fallback': 'no floating parameters',
-        }
+        }, audit_time_s, aggregation_time_s)
 
     _, normalized, norms, accepted = _plaintext_normalized_deltas(
         local_weights, global_weights, keys)
     if not accepted:
-        return average_weights(local_weights, sample_counts), {
+        audit_time_s = time.perf_counter() - audit_start
+        aggregation_start = time.perf_counter()
+        aggregated = average_weights(local_weights, sample_counts)
+        aggregation_time_s = time.perf_counter() - aggregation_start
+        return aggregated, _with_efficiency_timing({
             'defense': PDFL,
             'selected_count': len(local_weights),
             'fallback': 'zero update vectors',
-        }
+            'audited_layer_count': len(keys),
+            'auditable_layer_count': len(keys),
+            'audited_layer_ratio': 1.0,
+        }, audit_time_s, aggregation_time_s)
 
     similarities = normalized.matmul(normalized.t()).clamp(
         min=-1.0, max=1.0)
@@ -420,9 +469,12 @@ def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
         similarity_weights = [1.0 for _ in cluster]
         fallback = 'zero similarity weight mass'
 
+    audit_time_s = time.perf_counter() - audit_start
+    aggregation_start = time.perf_counter()
     aggregated, _, aggregate_scale = _normalized_delta_update(
         global_weights, local_weights, keys, cluster, similarity_weights,
         normalized, norms)
+    aggregation_time_s = time.perf_counter() - aggregation_start
     info = {
         'defense': PDFL,
         'selected_count': len(cluster),
@@ -432,10 +484,14 @@ def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
         'min_similarity_weight': min(similarity_weights),
         'max_similarity_weight': max(similarity_weights),
         'aggregation_scale': aggregate_scale,
+        'audited_layer_count': len(keys),
+        'auditable_layer_count': len(keys),
+        'audited_layer_ratio': 1.0,
     }
     if fallback is not None:
         info['fallback'] = fallback
-    return aggregated, info
+    return aggregated, _with_efficiency_timing(
+        info, audit_time_s, aggregation_time_s)
 
 
 def _largest_similarity_component(similarities, positions, threshold):
@@ -485,13 +541,18 @@ def _mean_internal_similarity(similarities, component):
 
 def _pritrust_fl(args, global_weights, local_weights, sample_counts,
                  client_ids, state):
+    audit_start = time.perf_counter()
     auditable_keys = _pritrust_auditable_keys(global_weights)
     if not auditable_keys:
-        return average_weights(local_weights, sample_counts), {
+        audit_time_s = time.perf_counter() - audit_start
+        aggregation_start = time.perf_counter()
+        aggregated = average_weights(local_weights, sample_counts)
+        aggregation_time_s = time.perf_counter() - aggregation_start
+        return aggregated, _with_efficiency_timing({
             'defense': PRITRUST_FL,
             'selected_count': len(local_weights),
             'fallback': 'no auditable floating parameters',
-        }
+        }, audit_time_s, aggregation_time_s)
 
     trust_memory = state.setdefault('pritrust_client_trust', {})
     previous_trust = [
@@ -537,8 +598,11 @@ def _pritrust_fl(args, global_weights, local_weights, sample_counts,
         for position in retained_positions
     ]
     aggregation_weights = _normalize_or_uniform(retained_mass)
+    audit_time_s = time.perf_counter() - audit_start
+    aggregation_start = time.perf_counter()
     aggregated = _trust_weighted_delta_update(
         global_weights, local_weights, retained_positions, aggregation_weights)
+    aggregation_time_s = time.perf_counter() - aggregation_start
 
     state['pritrust_previous_global_weights'] = copy.deepcopy(global_weights)
     state['pritrust_round'] = round_number
@@ -562,10 +626,16 @@ def _pritrust_fl(args, global_weights, local_weights, sample_counts,
         'max_score': max(client_scores),
         'min_trust': min(updated_trust),
         'max_trust': max(updated_trust),
+        'audited_layer_count': len(audited_keys),
+        'auditable_layer_count': len(auditable_keys),
+        'audited_layer_ratio': (
+            float(len(audited_keys)) / float(len(auditable_keys))
+        ),
     }
     if norm_fallback is not None:
         info['fallback'] = norm_fallback
-    return aggregated, info
+    return aggregated, _with_efficiency_timing(
+        info, audit_time_s, aggregation_time_s)
 
 
 def _normalize_or_uniform(values):

@@ -189,6 +189,7 @@ def main():
         # Training
         test_epochs, mta_accuracy, test_losses = [], [], []
         attack_success_rates = []
+        round_metrics = []
         best_mta_acc, best_mta_epoch = 0.0, 0
         aggregation_state = {}
 
@@ -207,6 +208,7 @@ def main():
             selected_user_ids = sorted(int(idx) for idx in idxs_users)
             selected_malicious_flags = []
             selected_malicious_ids = []
+            local_training_time_s = 0.0
 
             for user_position, idx in enumerate(idxs_users, start=1):
                 user_start_time = time.time()
@@ -221,6 +223,7 @@ def main():
                     global_round=current_epoch)
                 local_weights.append(copy.deepcopy(w))
                 local_sample_counts.append(len(user_groups[idx]))
+                local_training_time_s += time.time() - user_start_time
                 if args.verbose:
                     LOGGER.info(
                         '| Global Round : %s/%s | User : %s/%s (idx: %s) | '
@@ -233,10 +236,21 @@ def main():
                 selected_malicious_flags)
 
             # update global weights
+            aggregation_call_start = time.perf_counter()
             global_weights, defense_info = aggregate_weights(
                 args, global_weights, local_weights, local_sample_counts,
                 client_ids=selected_client_ids_ordered,
                 state=aggregation_state)
+            aggregation_call_time_s = (
+                time.perf_counter() - aggregation_call_start)
+            defense_info = dict(defense_info)
+            defense_info.setdefault('server_audit_time_s', 0.0)
+            defense_info.setdefault(
+                'aggregation_time_s', aggregation_call_time_s)
+            defense_info.setdefault(
+                'server_online_time_s',
+                (float(defense_info.get('server_audit_time_s', 0.0)) +
+                 float(defense_info.get('aggregation_time_s', 0.0))))
 
             # update global weights
             global_model.load_state_dict(global_weights)
@@ -264,6 +278,30 @@ def main():
             elapsed_time = now - start_time
             progress_summary = format_round_progress(
                 current_epoch, args.epochs, elapsed_time)
+            round_metric = {
+                'round': current_epoch,
+                'dataset': args.dataset,
+                'defense': args.defense,
+                'selected_clients': m,
+                'selected_client_ids': list(selected_client_ids_ordered),
+                'local_training_time_s': float(local_training_time_s),
+                'server_audit_time_s': float(
+                    defense_info.get('server_audit_time_s', 0.0)),
+                'aggregation_time_s': float(
+                    defense_info.get('aggregation_time_s', 0.0)),
+                'server_online_time_s': float(
+                    defense_info.get('server_online_time_s', 0.0)),
+                'aggregation_call_time_s': float(aggregation_call_time_s),
+                'online_round_time_s': float(round_time),
+                'round_time_s': float(round_time),
+                'audited_layer_count': defense_info.get(
+                    'audited_layer_count'),
+                'auditable_layer_count': defense_info.get(
+                    'auditable_layer_count'),
+                'audited_layer_ratio': defense_info.get(
+                    'audited_layer_ratio'),
+            }
+            round_metrics.append(round_metric)
 
             selected_users_summary = 'Selected Users: {}/{}'.format(
                 m, args.num_users)
@@ -306,9 +344,13 @@ def main():
                 if asr is not None:
                     round_summary += ' | ASR: {:.2f}%'.format(100*asr)
             round_summary += (
-                ' | LR: {:.6f} | Progress: {} | Round Time: {} | '
+                ' | LR: {:.6f} | Audit Time: {:.4f}s | '
+                'Aggregation Time: {:.4f}s | Progress: {} | Round Time: {} | '
                 'Elapsed Time: {}'.format(
-                    args.current_lr, progress_summary,
+                    args.current_lr,
+                    round_metric['server_audit_time_s'],
+                    round_metric['aggregation_time_s'],
+                    progress_summary,
                     format_run_time(round_time),
                     format_run_time(elapsed_time))
             )
@@ -356,6 +398,7 @@ def main():
                 'mta_accuracy': mta_accuracy,
                 'attack_success_rates': attack_success_rates,
                 'asr': attack_success_rates,
+                'round_metrics': round_metrics,
             }, f)
         LOGGER.info('Saved test metrics: %s', file_name)
 
