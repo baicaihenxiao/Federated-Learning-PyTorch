@@ -93,7 +93,8 @@ def get_federated_run_name(args):
          'pritrust_theta_tem', 'pritrust_theta_spa', 'pritrust_gamma',
          'pritrust_r_max', 'pritrust_rho', 'pritrust_kappa',
          'pritrust_security_bits', 'secure_share_bits',
-         'shieldfl_modulus_bits',
+         'shieldfl_modulus_bits', 'shieldfl_plaintext_bits',
+         'shieldfl_packing_slack_bits', 'shieldfl_packing_factor',
          'attack', 'malicious_ratio', 'test_interval'],
     )
 
@@ -329,6 +330,12 @@ def main():
                     'secure_protocol_audited_parameter_count',
                     'secure_protocol_selected_clients',
                     'secure_protocol_retained_clients',
+                    'secure_protocol_ciphertext_bits',
+                    'secure_protocol_plaintext_bits',
+                    'secure_protocol_packing_slack_bits',
+                    'secure_protocol_packing_factor',
+                    'secure_protocol_ciphertext_count',
+                    'secure_protocol_pair_count',
                     'plaintext_audit_time_s',
                     'plaintext_aggregation_time_s']:
                 if timing_key in defense_info:

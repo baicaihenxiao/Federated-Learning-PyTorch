@@ -127,7 +127,9 @@ EFFICIENCY_AVG_END_ROUND = 40
 FEDAVG_UPLOAD_BITS = 32
 SECRET_SHARE_BITS = 64
 SHIELDFL_MODULUS_BITS = 1024
-HE_CIPHERTEXT_BITS = 2 * SHIELDFL_MODULUS_BITS
+SHIELDFL_PLAINTEXT_BITS = 32
+SHIELDFL_PACKING_SLACK_BITS = 0
+SHIELDFL_PACKING_FACTOR = None
 
 PRITRUST_ARG_KEYS = [
     'pritrust_audit_layers',
@@ -318,7 +320,7 @@ Table~\ref{tab:targeted_30} summarizes the clean test accuracy and ASR at the hi
 
 This subsection evaluates the online efficiency of PriTrust-FL. Since PriTrust-FL relies on additive secret sharing, secure multiplication, secure comparison, stochastic layer auditing, and trust-weighted secure aggregation, it is important to measure the additional online cost introduced by the privacy-preserving defense. We report the average client upload size, server-side audit time, aggregation time, and online round time. The reported online time excludes offline Beaver triple preprocessing because the triples are independent of client updates and can be generated before training starts. Each reported value is averaged over the  $10$~$40$ online rounds.
 
-Table~\ref{tab:efficiency1} reports the efficiency results on MNIST and CIFAR-10. FedAvg has the lowest communication and computation cost because it does not provide update privacy or poisoning defense. ShieldFL incurs larger communication overhead because homomorphic encryption expands each encrypted update element. PDFL and PriTrust-FL use secret sharing and therefore avoid expensive client-side public-key encryption. Compared with PDFL, PriTrust-FL restricts secure auditing to the selected learnable tensors rather than evaluating the whole model in every round. This reduces the online secure-computation cost while preserving robustness against poisoning attacks. The results show that PriTrust-FL introduces moderate online overhead and remains practical for the evaluated federated learning settings.
+Table~\ref{tab:efficiency1} reports the efficiency results on MNIST and CIFAR-10. FedAvg has the lowest communication and computation cost because it does not provide update privacy or poisoning defense. ShieldFL incurs larger communication overhead because homomorphic encryption expands each packed encrypted update. PDFL and PriTrust-FL use secret sharing and therefore avoid expensive client-side public-key encryption. Compared with PDFL, PriTrust-FL restricts secure auditing to the selected learnable tensors rather than evaluating the whole model in every round. This reduces the online secure-computation cost while preserving robustness against poisoning attacks. The results show that PriTrust-FL introduces moderate online overhead and remains practical for the evaluated federated learning settings.
 
 \begin{table*}[t]
 \caption{Online efficiency comparison. Beaver triple preprocessing is excluded from the online time.}
@@ -366,6 +368,18 @@ def ratio_key(value):
 
 def float_key(value):
     return round(float(value), 8)
+
+
+def optional_int_key(value):
+    if value is None or value == '':
+        return -1
+    return int(value)
+
+
+def optional_int_value(value):
+    if value is None or value == '':
+        return None
+    return int(value)
 
 
 def pritrust_params_from_namespace(args):
@@ -443,6 +457,11 @@ def config_key(cfg):
         float_key(cfg.get('dirichlet_alpha', DIRICHLET_ALPHA)),
         int(cfg.get('secure_share_bits', SECRET_SHARE_BITS)),
         int(cfg.get('shieldfl_modulus_bits', SHIELDFL_MODULUS_BITS)),
+        int(cfg.get('shieldfl_plaintext_bits', SHIELDFL_PLAINTEXT_BITS)),
+        int(cfg.get('shieldfl_packing_slack_bits',
+                    SHIELDFL_PACKING_SLACK_BITS)),
+        optional_int_key(cfg.get('shieldfl_packing_factor',
+                                 SHIELDFL_PACKING_FACTOR)),
     ) + pritrust_config_key(cfg)
 
 
@@ -472,6 +491,9 @@ def base_config(dataset, iid, defense, attack, ratio, seed, epochs,
         'test_interval': int(test_interval),
         'secure_share_bits': SECRET_SHARE_BITS,
         'shieldfl_modulus_bits': SHIELDFL_MODULUS_BITS,
+        'shieldfl_plaintext_bits': SHIELDFL_PLAINTEXT_BITS,
+        'shieldfl_packing_slack_bits': SHIELDFL_PACKING_SLACK_BITS,
+        'shieldfl_packing_factor': SHIELDFL_PACKING_FACTOR,
     }
     cfg.update(pritrust_params_with_defaults())
     return cfg
@@ -493,9 +515,29 @@ def make_main_configs(seeds, methods, only_dataset, attacks, test_interval):
     return configs
 
 
+def set_protocol_config(cfg, share_bits=SECRET_SHARE_BITS,
+                        shieldfl_modulus_bits=SHIELDFL_MODULUS_BITS,
+                        shieldfl_plaintext_bits=SHIELDFL_PLAINTEXT_BITS,
+                        shieldfl_packing_slack_bits=(
+                            SHIELDFL_PACKING_SLACK_BITS),
+                        shieldfl_packing_factor=SHIELDFL_PACKING_FACTOR):
+    cfg['secure_share_bits'] = int(share_bits)
+    cfg['shieldfl_modulus_bits'] = int(shieldfl_modulus_bits)
+    cfg['shieldfl_plaintext_bits'] = int(shieldfl_plaintext_bits)
+    cfg['shieldfl_packing_slack_bits'] = int(shieldfl_packing_slack_bits)
+    cfg['shieldfl_packing_factor'] = (
+        None if shieldfl_packing_factor is None
+        else int(shieldfl_packing_factor))
+    return cfg
+
+
 def make_efficiency_configs(seeds, methods, iid, rounds, test_interval,
                             share_bits=SECRET_SHARE_BITS,
-                            shieldfl_modulus_bits=SHIELDFL_MODULUS_BITS):
+                            shieldfl_modulus_bits=SHIELDFL_MODULUS_BITS,
+                            shieldfl_plaintext_bits=SHIELDFL_PLAINTEXT_BITS,
+                            shieldfl_packing_slack_bits=(
+                                SHIELDFL_PACKING_SLACK_BITS),
+                            shieldfl_packing_factor=SHIELDFL_PACKING_FACTOR):
     configs = []
     for dataset in EFFICIENCY_DATASETS:
         for method in methods:
@@ -503,8 +545,13 @@ def make_efficiency_configs(seeds, methods, iid, rounds, test_interval,
                 cfg = base_config(
                     dataset, iid, method, 'none', 0.0, seed, rounds,
                     test_interval)
-                cfg['secure_share_bits'] = int(share_bits)
-                cfg['shieldfl_modulus_bits'] = int(shieldfl_modulus_bits)
+                set_protocol_config(
+                    cfg, share_bits=share_bits,
+                    shieldfl_modulus_bits=shieldfl_modulus_bits,
+                    shieldfl_plaintext_bits=shieldfl_plaintext_bits,
+                    shieldfl_packing_slack_bits=(
+                        shieldfl_packing_slack_bits),
+                    shieldfl_packing_factor=shieldfl_packing_factor)
                 configs.append(cfg)
     return configs
 
@@ -533,6 +580,11 @@ def build_command(cfg, gpu_id=None):
         f'--secure_share_bits={cfg.get("secure_share_bits", SECRET_SHARE_BITS)}',
         '--shieldfl_modulus_bits={}'.format(
             cfg.get('shieldfl_modulus_bits', SHIELDFL_MODULUS_BITS)),
+        '--shieldfl_plaintext_bits={}'.format(
+            cfg.get('shieldfl_plaintext_bits', SHIELDFL_PLAINTEXT_BITS)),
+        '--shieldfl_packing_slack_bits={}'.format(
+            cfg.get('shieldfl_packing_slack_bits',
+                    SHIELDFL_PACKING_SLACK_BITS)),
         f'--attack={cfg["attack"]}',
         f'--malicious_ratio={cfg["malicious_ratio"]}',
         '--sign_flip_lambda=5',
@@ -542,6 +594,9 @@ def build_command(cfg, gpu_id=None):
         '--backdoor_fraction=0.2',
         f'--seed={cfg["seed"]}',
     ]
+    if cfg.get('shieldfl_packing_factor') is not None:
+        cmd.append('--shieldfl_packing_factor={}'.format(
+            int(cfg['shieldfl_packing_factor'])))
     if normalize_method(cfg['defense']) == 'pritrust_fl':
         pritrust_params = pritrust_params_with_defaults(cfg)
         if pritrust_params['pritrust_audit_layers'] is not None:
@@ -600,6 +655,13 @@ def load_pkl(pkl_path):
                 'secure_share_bits', SECRET_SHARE_BITS)),
             'shieldfl_modulus_bits': int(args.get(
                 'shieldfl_modulus_bits', SHIELDFL_MODULUS_BITS)),
+            'shieldfl_plaintext_bits': int(args.get(
+                'shieldfl_plaintext_bits', SHIELDFL_PLAINTEXT_BITS)),
+            'shieldfl_packing_slack_bits': int(args.get(
+                'shieldfl_packing_slack_bits',
+                SHIELDFL_PACKING_SLACK_BITS)),
+            'shieldfl_packing_factor': optional_int_value(args.get(
+                'shieldfl_packing_factor', SHIELDFL_PACKING_FACTOR)),
         }
         cfg.update(pritrust_params_with_defaults(args, base=PRITRUST_DEFAULTS))
     except (KeyError, TypeError, ValueError, argparse.ArgumentTypeError):
@@ -952,7 +1014,9 @@ def write_csvs(runs, seeds, allow_partial=False):
             fieldnames=[
                 'dataset', 'iid', 'defense', 'attack', 'malicious_ratio',
                 'seed', 'epochs', 'secure_share_bits',
-                'shieldfl_modulus_bits', *PRITRUST_ARG_KEYS, 'final_mta',
+                'shieldfl_modulus_bits', 'shieldfl_plaintext_bits',
+                'shieldfl_packing_slack_bits', 'shieldfl_packing_factor',
+                *PRITRUST_ARG_KEYS, 'final_mta',
                 'final_asr', 'pkl',
             ],
         )
@@ -972,6 +1036,14 @@ def write_csvs(runs, seeds, allow_partial=False):
                     'secure_share_bits', SECRET_SHARE_BITS),
                 'shieldfl_modulus_bits': cfg.get(
                     'shieldfl_modulus_bits', SHIELDFL_MODULUS_BITS),
+                'shieldfl_plaintext_bits': cfg.get(
+                    'shieldfl_plaintext_bits', SHIELDFL_PLAINTEXT_BITS),
+                'shieldfl_packing_slack_bits': cfg.get(
+                    'shieldfl_packing_slack_bits',
+                    SHIELDFL_PACKING_SLACK_BITS),
+                'shieldfl_packing_factor': '' if cfg.get(
+                    'shieldfl_packing_factor') is None else cfg.get(
+                    'shieldfl_packing_factor'),
                 **pritrust_csv_values(cfg),
                 'final_mta': record['final_mta'],
                 'final_asr': record['final_asr'],
@@ -1337,6 +1409,35 @@ def model_parameter_count(dataset):
     return sum(parameter.numel() for parameter in model.parameters())
 
 
+def shieldfl_ciphertext_bits(args):
+    explicit_ciphertext_bits = getattr(
+        args, 'efficiency_he_ciphertext_bits', None)
+    if explicit_ciphertext_bits is not None:
+        return int(explicit_ciphertext_bits)
+    modulus_bits = int(getattr(
+        args, 'efficiency_shieldfl_modulus_bits',
+        SHIELDFL_MODULUS_BITS))
+    return 2 * modulus_bits
+
+
+def shieldfl_packing_factor(args):
+    explicit = getattr(args, 'efficiency_shieldfl_packing_factor', None)
+    if explicit is not None:
+        return max(int(explicit), 1)
+
+    plaintext_bits = max(int(getattr(
+        args, 'efficiency_shieldfl_plaintext_bits',
+        SHIELDFL_PLAINTEXT_BITS)), 1)
+    slack_bits = max(int(getattr(
+        args, 'efficiency_shieldfl_packing_slack_bits',
+        SHIELDFL_PACKING_SLACK_BITS)), 0)
+    slot_bits = max(plaintext_bits + slack_bits, 1)
+    modulus_bits = int(getattr(
+        args, 'efficiency_shieldfl_modulus_bits',
+        SHIELDFL_MODULUS_BITS))
+    return max(modulus_bits // slot_bits, 1)
+
+
 def protocol_upload_bits_per_parameter(method, args):
     method = normalize_method(method)
     if method == 'fedavg':
@@ -1347,14 +1448,8 @@ def protocol_upload_bits_per_parameter(method, args):
                                  SECRET_SHARE_BITS))
         return 2 * share_bits
     if method == 'shieldfl':
-        explicit_ciphertext_bits = getattr(
-            args, 'efficiency_he_ciphertext_bits', None)
-        if explicit_ciphertext_bits is not None:
-            return int(explicit_ciphertext_bits)
-        modulus_bits = int(getattr(
-            args, 'efficiency_shieldfl_modulus_bits',
-            SHIELDFL_MODULUS_BITS))
-        return 2 * modulus_bits
+        return (float(shieldfl_ciphertext_bits(args)) /
+                float(shieldfl_packing_factor(args)))
     return int(getattr(args, 'efficiency_fedavg_bits', FEDAVG_UPLOAD_BITS))
 
 
@@ -1373,8 +1468,16 @@ def client_upload_bytes(args):
 
         result[dataset] = {}
         for method in EFFICIENCY_METHODS:
-            bits = protocol_upload_bits_per_parameter(method, args)
-            result[dataset][method] = parameter_count * bits / 8.0
+            if method == 'shieldfl':
+                packing_factor = shieldfl_packing_factor(args)
+                ciphertext_count = (
+                    parameter_count + packing_factor - 1
+                ) // packing_factor
+                result[dataset][method] = (
+                    ciphertext_count * shieldfl_ciphertext_bits(args) / 8.0)
+            else:
+                bits = protocol_upload_bits_per_parameter(method, args)
+                result[dataset][method] = parameter_count * bits / 8.0
     return result
 
 
@@ -1424,6 +1527,13 @@ def find_efficiency_record(runs, dataset, method, seed, args):
     preferred = base_config(
         dataset, args.efficiency_iid, method, 'none', 0.0, seed,
         args.efficiency_rounds, test_interval=0)
+    set_protocol_config(
+        preferred, share_bits=args.efficiency_share_bits,
+        shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits,
+        shieldfl_plaintext_bits=args.efficiency_shieldfl_plaintext_bits,
+        shieldfl_packing_slack_bits=(
+            args.efficiency_shieldfl_packing_slack_bits),
+        shieldfl_packing_factor=args.efficiency_shieldfl_packing_factor)
     record = runs.get(config_key(preferred))
     if record is not None and has_current_efficiency_timing(record):
         return record
@@ -1431,6 +1541,13 @@ def find_efficiency_record(runs, dataset, method, seed, args):
     fallback = base_config(
         dataset, args.efficiency_iid, method, 'none', 0.0, seed,
         DEFAULT_EPOCHS[dataset], test_interval=0)
+    set_protocol_config(
+        fallback, share_bits=args.efficiency_share_bits,
+        shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits,
+        shieldfl_plaintext_bits=args.efficiency_shieldfl_plaintext_bits,
+        shieldfl_packing_slack_bits=(
+            args.efficiency_shieldfl_packing_slack_bits),
+        shieldfl_packing_factor=args.efficiency_shieldfl_packing_factor)
     record = runs.get(config_key(fallback))
     if record is not None and has_current_efficiency_timing(record):
         return record
@@ -1438,9 +1555,21 @@ def find_efficiency_record(runs, dataset, method, seed, args):
 
 
 def has_current_efficiency_timing(record):
+    cfg = record.get('cfg') or {}
+    args = record.get('args') or {}
+    method = normalize_method(cfg.get('defense', args.get('defense',
+                                                          'fedavg')))
     for item in record.get('round_metrics') or []:
-        if ('parallel_local_training_time_s' in item and
-                'client_protocol_time_s' in item):
+        has_parallel_online_timing = (
+            'parallel_local_training_time_s' in item and
+            'client_protocol_time_s' in item)
+        if not has_parallel_online_timing:
+            continue
+        if method == 'fedavg':
+            return True
+        if ('secure_protocol_pair_count' in item and
+                'secure_protocol_ciphertext_count' in item and
+                'secure_protocol_packing_factor' in item):
             return True
     return False
 
@@ -1867,7 +1996,11 @@ def cmd_efficiency(args):
         args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
         args.efficiency_rounds, test_interval=0,
         share_bits=args.efficiency_share_bits,
-        shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits)
+        shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits,
+        shieldfl_plaintext_bits=args.efficiency_shieldfl_plaintext_bits,
+        shieldfl_packing_slack_bits=(
+            args.efficiency_shieldfl_packing_slack_bits),
+        shieldfl_packing_factor=args.efficiency_shieldfl_packing_factor)
     dispatch_configs(
         configs, args.gpus, args.tasks_per_gpu,
         args.max_cifar_per_gpu,
@@ -1886,7 +2019,11 @@ def cmd_status(args):
             args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
             args.efficiency_rounds, test_interval=0,
             share_bits=args.efficiency_share_bits,
-            shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits)
+            shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits,
+            shieldfl_plaintext_bits=args.efficiency_shieldfl_plaintext_bits,
+            shieldfl_packing_slack_bits=(
+                args.efficiency_shieldfl_packing_slack_bits),
+            shieldfl_packing_factor=args.efficiency_shieldfl_packing_factor)
         report_missing('Efficiency run status:', efficiency_configs, runs)
 
 
@@ -1904,7 +2041,11 @@ def cmd_report(args):
             args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
             args.efficiency_rounds, test_interval=0,
             share_bits=args.efficiency_share_bits,
-            shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits)
+            shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits,
+            shieldfl_plaintext_bits=args.efficiency_shieldfl_plaintext_bits,
+            shieldfl_packing_slack_bits=(
+                args.efficiency_shieldfl_packing_slack_bits),
+            shieldfl_packing_factor=args.efficiency_shieldfl_packing_factor)
         report_missing('Efficiency run status:', efficiency_configs, runs)
 
     write_csvs(runs, args.seeds, allow_partial=args.allow_partial)
@@ -2111,6 +2252,23 @@ def build_parser():
         help='Paillier modulus bit length N for ShieldFL; ciphertexts use '
         '2N bits')
     parser.add_argument(
+        '--efficiency-shieldfl-plaintext-bits',
+        '--efficiency_shieldfl_plaintext_bits', type=int,
+        default=SHIELDFL_PLAINTEXT_BITS,
+        help='bits per ShieldFL plaintext slot before Paillier packing')
+    parser.add_argument(
+        '--efficiency-shieldfl-packing-slack-bits',
+        '--efficiency_shieldfl_packing_slack_bits', type=int,
+        default=SHIELDFL_PACKING_SLACK_BITS,
+        help='extra per-slot slack bits reserved in the ShieldFL packing '
+        'estimate')
+    parser.add_argument(
+        '--efficiency-shieldfl-packing-factor',
+        '--efficiency_shieldfl_packing_factor', type=int,
+        default=SHIELDFL_PACKING_FACTOR,
+        help='override the number of update values packed in one ShieldFL '
+        'ciphertext; default is floor(N / (plaintext_bits + slack_bits))')
+    parser.add_argument(
         '--efficiency-he-ciphertext-bits',
         '--efficiency_he_ciphertext_bits', type=int,
         default=None,
@@ -2183,6 +2341,15 @@ def main():
         parser.error('--efficiency-share-bits must be at least 1')
     if args.efficiency_shieldfl_modulus_bits < 1:
         parser.error('--efficiency-shieldfl-modulus-bits must be at least 1')
+    if args.efficiency_shieldfl_plaintext_bits < 1:
+        parser.error('--efficiency-shieldfl-plaintext-bits must be at least 1')
+    if args.efficiency_shieldfl_packing_slack_bits < 0:
+        parser.error('--efficiency-shieldfl-packing-slack-bits must be '
+                     'greater than or equal to 0')
+    if (args.efficiency_shieldfl_packing_factor is not None and
+            args.efficiency_shieldfl_packing_factor < 1):
+        parser.error('--efficiency-shieldfl-packing-factor must be at least '
+                     '1 when set')
     if (args.efficiency_he_ciphertext_bits is not None and
             args.efficiency_he_ciphertext_bits < 1):
         parser.error('--efficiency-he-ciphertext-bits must be at least 1')

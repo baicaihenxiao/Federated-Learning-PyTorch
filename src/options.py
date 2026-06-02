@@ -5,7 +5,14 @@
 import argparse
 
 from attacks import ATTACK_CHOICES, NO_ATTACK
-from defenses import DEFENSE_CHOICES, normalize_defense_name
+from defenses import (
+    DEFENSE_CHOICES,
+    DEFAULT_SECURE_SHARE_BITS,
+    DEFAULT_SHIELDFL_MODULUS_BITS,
+    DEFAULT_SHIELDFL_PACKING_SLACK_BITS,
+    DEFAULT_SHIELDFL_PLAINTEXT_BITS,
+    normalize_defense_name,
+)
 
 
 MAX_RANDOM_SEED = 2**32 - 1
@@ -273,12 +280,26 @@ def args_parser(experiment=None):
     parser.add_argument('--pritrust_security_bits', type=int, default=128,
                         help='security-bit value mixed into the plaintext '
                         'stochastic audit seed')
-    parser.add_argument('--secure_share_bits', type=int, default=64,
+    parser.add_argument('--secure_share_bits', type=int,
+                        default=DEFAULT_SECURE_SHARE_BITS,
                         help='bit length of each additive secret share used '
                         'for secure-protocol timing estimates')
-    parser.add_argument('--shieldfl_modulus_bits', type=int, default=1024,
+    parser.add_argument('--shieldfl_modulus_bits', type=int,
+                        default=DEFAULT_SHIELDFL_MODULUS_BITS,
                         help='Paillier modulus bit length N for ShieldFL '
                         'secure-protocol timing and upload estimates')
+    parser.add_argument('--shieldfl_plaintext_bits', type=int,
+                        default=DEFAULT_SHIELDFL_PLAINTEXT_BITS,
+                        help='bit length of each ShieldFL plaintext slot when '
+                        'estimating packed Paillier ciphertexts')
+    parser.add_argument('--shieldfl_packing_slack_bits', type=int,
+                        default=DEFAULT_SHIELDFL_PACKING_SLACK_BITS,
+                        help='extra per-slot slack bits reserved when '
+                        'estimating ShieldFL Paillier packing')
+    parser.add_argument('--shieldfl_packing_factor', type=int, default=None,
+                        help='override the number of update values packed in '
+                        'one ShieldFL ciphertext; default is '
+                        'floor(N / (plaintext_bits + slack_bits))')
     parser.add_argument('--secure_timing_sample_size', type=int, default=4096,
                         help='sample size for additive-sharing primitive '
                         'timing benchmarks')
@@ -386,6 +407,14 @@ def args_parser(experiment=None):
         parser.error('--secure_share_bits must be at least 1')
     if args.shieldfl_modulus_bits < 1:
         parser.error('--shieldfl_modulus_bits must be at least 1')
+    if args.shieldfl_plaintext_bits < 1:
+        parser.error('--shieldfl_plaintext_bits must be at least 1')
+    if args.shieldfl_packing_slack_bits < 0:
+        parser.error('--shieldfl_packing_slack_bits must be greater than or '
+                     'equal to 0')
+    if (args.shieldfl_packing_factor is not None and
+            args.shieldfl_packing_factor < 1):
+        parser.error('--shieldfl_packing_factor must be at least 1 when set')
     if args.secure_timing_sample_size < 1:
         parser.error('--secure_timing_sample_size must be at least 1')
     if args.paillier_timing_sample_size < 1:

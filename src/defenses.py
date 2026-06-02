@@ -19,6 +19,8 @@ PDFL = 'pdfl'
 PRITRUST_FL = 'pritrust_fl'
 DEFAULT_SECURE_SHARE_BITS = 64
 DEFAULT_SHIELDFL_MODULUS_BITS = 1024
+DEFAULT_SHIELDFL_PLAINTEXT_BITS = 32
+DEFAULT_SHIELDFL_PACKING_SLACK_BITS = 0
 DEFAULT_SECURE_TIMING_SAMPLE_SIZE = 4096
 DEFAULT_PAILLIER_TIMING_SAMPLE_SIZE = 8
 
@@ -155,24 +157,43 @@ def _estimate_secure_protocol_timing(args, state, method, global_weights,
         return _zero_secure_protocol_timing()
 
     if method == SHIELDFL:
+        packing_factor = _shieldfl_packing_factor(args)
+        ciphertext_bits = _shieldfl_ciphertext_bits(args)
+        plaintext_bits = int(getattr(args, 'shieldfl_plaintext_bits',
+                                     DEFAULT_SHIELDFL_PLAINTEXT_BITS))
+        packing_slack_bits = int(getattr(
+            args, 'shieldfl_packing_slack_bits',
+            DEFAULT_SHIELDFL_PACKING_SLACK_BITS))
+        ciphertext_count = _ceil_div(total_params, packing_factor)
         client_time = (
-            total_params * primitives['paillier_encrypt_per_element_s'])
+            ciphertext_count * primitives['paillier_encrypt_per_element_s'])
         audit_time = (
-            selected_count * total_params *
+            selected_count * ciphertext_count *
             (primitives['paillier_add_per_element_s'] +
              primitives['paillier_scalar_mul_per_element_s']))
         aggregation_time = (
-            retained_count * total_params *
+            retained_count * ciphertext_count *
             primitives['paillier_add_per_element_s'])
         protocol = 'paillier_n{}_80bit'.format(
             int(getattr(args, 'shieldfl_modulus_bits',
                         DEFAULT_SHIELDFL_MODULUS_BITS)))
+        pair_count = 0
     elif method == PDFL:
+        packing_factor = 0
+        ciphertext_bits = 0
+        plaintext_bits = 0
+        packing_slack_bits = 0
+        ciphertext_count = 0
+        pair_count = selected_count * selected_count
         client_time = total_params * primitives['share_per_element_s']
         audit_time = (
             selected_count * total_params *
-            (2.0 * primitives['ring_mul_per_element_s'] +
-             primitives['ring_add_per_element_s']))
+            (primitives['ring_mul_per_element_s'] +
+             primitives['ring_add_per_element_s']) +
+            pair_count * total_params *
+            (primitives['ring_mul_per_element_s'] +
+             primitives['ring_add_per_element_s']) +
+            pair_count * primitives['ring_compare_per_element_s'])
         aggregation_time = (
             retained_count * total_params *
             (primitives['ring_mul_per_element_s'] +
@@ -181,6 +202,12 @@ def _estimate_secure_protocol_timing(args, state, method, global_weights,
             int(getattr(args, 'secure_share_bits',
                         DEFAULT_SECURE_SHARE_BITS)))
     else:
+        packing_factor = 0
+        ciphertext_bits = 0
+        plaintext_bits = 0
+        packing_slack_bits = 0
+        ciphertext_count = 0
+        pair_count = 0
         client_time = total_params * primitives['share_per_element_s']
         audit_time = (
             selected_count * audited_params *
@@ -201,6 +228,12 @@ def _estimate_secure_protocol_timing(args, state, method, global_weights,
         'secure_protocol_audited_parameter_count': int(audited_params),
         'secure_protocol_selected_clients': int(selected_count),
         'secure_protocol_retained_clients': int(retained_count),
+        'secure_protocol_ciphertext_bits': int(ciphertext_bits),
+        'secure_protocol_plaintext_bits': int(plaintext_bits),
+        'secure_protocol_packing_slack_bits': int(packing_slack_bits),
+        'secure_protocol_packing_factor': int(packing_factor),
+        'secure_protocol_ciphertext_count': int(ciphertext_count),
+        'secure_protocol_pair_count': int(pair_count),
         'secure_protocol_audit_time_s': float(audit_time),
         'secure_protocol_aggregation_time_s': float(aggregation_time),
         'client_protocol_time_s': float(client_time),
@@ -214,10 +247,44 @@ def _zero_secure_protocol_timing():
         'secure_protocol_audited_parameter_count': 0,
         'secure_protocol_selected_clients': 0,
         'secure_protocol_retained_clients': 0,
+        'secure_protocol_ciphertext_bits': 0,
+        'secure_protocol_plaintext_bits': 0,
+        'secure_protocol_packing_slack_bits': 0,
+        'secure_protocol_packing_factor': 0,
+        'secure_protocol_ciphertext_count': 0,
+        'secure_protocol_pair_count': 0,
         'secure_protocol_audit_time_s': 0.0,
         'secure_protocol_aggregation_time_s': 0.0,
         'client_protocol_time_s': 0.0,
     }
+
+
+def _ceil_div(numerator, denominator):
+    denominator = max(int(denominator), 1)
+    return (int(numerator) + denominator - 1) // denominator
+
+
+def _shieldfl_ciphertext_bits(args):
+    modulus_bits = int(getattr(args, 'shieldfl_modulus_bits',
+                               DEFAULT_SHIELDFL_MODULUS_BITS))
+    return 2 * modulus_bits
+
+
+def _shieldfl_packing_factor(args):
+    explicit = getattr(args, 'shieldfl_packing_factor', None)
+    if explicit is not None:
+        return max(int(explicit), 1)
+
+    plaintext_bits = max(int(getattr(
+        args, 'shieldfl_plaintext_bits',
+        DEFAULT_SHIELDFL_PLAINTEXT_BITS)), 1)
+    slack_bits = max(int(getattr(
+        args, 'shieldfl_packing_slack_bits',
+        DEFAULT_SHIELDFL_PACKING_SLACK_BITS)), 0)
+    slot_bits = max(plaintext_bits + slack_bits, 1)
+    modulus_bits = int(getattr(args, 'shieldfl_modulus_bits',
+                               DEFAULT_SHIELDFL_MODULUS_BITS))
+    return max(modulus_bits // slot_bits, 1)
 
 
 def _secure_protocol_primitives(args, state):

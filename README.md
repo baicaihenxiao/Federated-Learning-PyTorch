@@ -159,8 +159,13 @@ secure aggregation. The timing data is saved in each run pickle under
 benchmarks and operation counts. The default protocol assumptions are 64-bit
 additive shares for PDFL/PriTrust-FL and ShieldFL Paillier security level
 80-bit with `N=1024`, so each ShieldFL ciphertext is modeled as `2N=2048`
-bits. These defaults can be changed with `--efficiency-share-bits`,
-`--efficiency-shieldfl-modulus-bits`, and
+bits. ShieldFL upload and client encryption time use packed ciphertexts by
+default, with 32-bit plaintext slots and packing factor
+`floor(N / plaintext_bits) = 32`. These defaults can be changed with
+`--efficiency-share-bits`, `--efficiency-shieldfl-modulus-bits`,
+`--efficiency-shieldfl-plaintext-bits`,
+`--efficiency-shieldfl-packing-slack-bits`,
+`--efficiency-shieldfl-packing-factor`, and
 `--efficiency-he-ciphertext-bits`.
 
 You can change the default values of other parameters to simulate different conditions. Refer to the options section.
