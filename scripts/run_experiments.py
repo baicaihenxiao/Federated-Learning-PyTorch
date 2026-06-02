@@ -23,7 +23,8 @@ Useful split workflow:
     python3 scripts/run_experiments.py report
 
 The default pipeline runs one seed and the repo's plaintext training/defense
-logic only. Efficiency timing is measured from the current online code path;
+logic only. Efficiency timing combines the current online code path with
+measured secure-protocol primitive benchmarks scaled by operation counts;
 communication sizes are computed from the protocol encodings used in the paper
 comparison.
 
@@ -125,7 +126,8 @@ EFFICIENCY_AVG_START_ROUND = 10
 EFFICIENCY_AVG_END_ROUND = 40
 FEDAVG_UPLOAD_BITS = 32
 SECRET_SHARE_BITS = 64
-HE_CIPHERTEXT_BITS = 4096
+SHIELDFL_MODULUS_BITS = 1024
+HE_CIPHERTEXT_BITS = 2 * SHIELDFL_MODULUS_BITS
 
 PRITRUST_ARG_KEYS = [
     'pritrust_audit_layers',
@@ -439,6 +441,8 @@ def config_key(cfg):
         int(cfg.get('local_bs', DEFAULT_LOCAL_BS[str(cfg['dataset']).lower()])),
         float_key(cfg.get('lr', DEFAULT_LR[str(cfg['dataset']).lower()])),
         float_key(cfg.get('dirichlet_alpha', DIRICHLET_ALPHA)),
+        int(cfg.get('secure_share_bits', SECRET_SHARE_BITS)),
+        int(cfg.get('shieldfl_modulus_bits', SHIELDFL_MODULUS_BITS)),
     ) + pritrust_config_key(cfg)
 
 
@@ -466,6 +470,8 @@ def base_config(dataset, iid, defense, attack, ratio, seed, epochs,
         'optimizer': 'sgd',
         'dirichlet_alpha': DIRICHLET_ALPHA,
         'test_interval': int(test_interval),
+        'secure_share_bits': SECRET_SHARE_BITS,
+        'shieldfl_modulus_bits': SHIELDFL_MODULUS_BITS,
     }
     cfg.update(pritrust_params_with_defaults())
     return cfg
@@ -487,14 +493,19 @@ def make_main_configs(seeds, methods, only_dataset, attacks, test_interval):
     return configs
 
 
-def make_efficiency_configs(seeds, methods, iid, rounds, test_interval):
+def make_efficiency_configs(seeds, methods, iid, rounds, test_interval,
+                            share_bits=SECRET_SHARE_BITS,
+                            shieldfl_modulus_bits=SHIELDFL_MODULUS_BITS):
     configs = []
     for dataset in EFFICIENCY_DATASETS:
         for method in methods:
             for seed in seeds:
-                configs.append(base_config(
+                cfg = base_config(
                     dataset, iid, method, 'none', 0.0, seed, rounds,
-                    test_interval))
+                    test_interval)
+                cfg['secure_share_bits'] = int(share_bits)
+                cfg['shieldfl_modulus_bits'] = int(shieldfl_modulus_bits)
+                configs.append(cfg)
     return configs
 
 
@@ -519,6 +530,9 @@ def build_command(cfg, gpu_id=None):
         f'--norm={cfg["norm"]}',
         f'--test_interval={cfg["test_interval"]}',
         f'--defense={cfg["defense"]}',
+        f'--secure_share_bits={cfg.get("secure_share_bits", SECRET_SHARE_BITS)}',
+        '--shieldfl_modulus_bits={}'.format(
+            cfg.get('shieldfl_modulus_bits', SHIELDFL_MODULUS_BITS)),
         f'--attack={cfg["attack"]}',
         f'--malicious_ratio={cfg["malicious_ratio"]}',
         '--sign_flip_lambda=5',
@@ -582,6 +596,10 @@ def load_pkl(pkl_path):
                 DEFAULT_LR[str(args['dataset']).lower()])),
             'dirichlet_alpha': float(args.get(
                 'dirichlet_alpha', DIRICHLET_ALPHA)),
+            'secure_share_bits': int(args.get(
+                'secure_share_bits', SECRET_SHARE_BITS)),
+            'shieldfl_modulus_bits': int(args.get(
+                'shieldfl_modulus_bits', SHIELDFL_MODULUS_BITS)),
         }
         cfg.update(pritrust_params_with_defaults(args, base=PRITRUST_DEFAULTS))
     except (KeyError, TypeError, ValueError, argparse.ArgumentTypeError):
@@ -933,7 +951,8 @@ def write_csvs(runs, seeds, allow_partial=False):
             handle,
             fieldnames=[
                 'dataset', 'iid', 'defense', 'attack', 'malicious_ratio',
-                'seed', 'epochs', *PRITRUST_ARG_KEYS, 'final_mta',
+                'seed', 'epochs', 'secure_share_bits',
+                'shieldfl_modulus_bits', *PRITRUST_ARG_KEYS, 'final_mta',
                 'final_asr', 'pkl',
             ],
         )
@@ -949,6 +968,10 @@ def write_csvs(runs, seeds, allow_partial=False):
                 'malicious_ratio': cfg['malicious_ratio'],
                 'seed': cfg['seed'],
                 'epochs': cfg['epochs'],
+                'secure_share_bits': cfg.get(
+                    'secure_share_bits', SECRET_SHARE_BITS),
+                'shieldfl_modulus_bits': cfg.get(
+                    'shieldfl_modulus_bits', SHIELDFL_MODULUS_BITS),
                 **pritrust_csv_values(cfg),
                 'final_mta': record['final_mta'],
                 'final_asr': record['final_asr'],
@@ -1324,8 +1347,14 @@ def protocol_upload_bits_per_parameter(method, args):
                                  SECRET_SHARE_BITS))
         return 2 * share_bits
     if method == 'shieldfl':
-        return int(getattr(args, 'efficiency_he_ciphertext_bits',
-                           HE_CIPHERTEXT_BITS))
+        explicit_ciphertext_bits = getattr(
+            args, 'efficiency_he_ciphertext_bits', None)
+        if explicit_ciphertext_bits is not None:
+            return int(explicit_ciphertext_bits)
+        modulus_bits = int(getattr(
+            args, 'efficiency_shieldfl_modulus_bits',
+            SHIELDFL_MODULUS_BITS))
+        return 2 * modulus_bits
     return int(getattr(args, 'efficiency_fedavg_bits', FEDAVG_UPLOAD_BITS))
 
 
@@ -1396,13 +1425,24 @@ def find_efficiency_record(runs, dataset, method, seed, args):
         dataset, args.efficiency_iid, method, 'none', 0.0, seed,
         args.efficiency_rounds, test_interval=0)
     record = runs.get(config_key(preferred))
-    if record is not None:
+    if record is not None and has_current_efficiency_timing(record):
         return record
 
     fallback = base_config(
         dataset, args.efficiency_iid, method, 'none', 0.0, seed,
         DEFAULT_EPOCHS[dataset], test_interval=0)
-    return runs.get(config_key(fallback))
+    record = runs.get(config_key(fallback))
+    if record is not None and has_current_efficiency_timing(record):
+        return record
+    return None
+
+
+def has_current_efficiency_timing(record):
+    for item in record.get('round_metrics') or []:
+        if ('parallel_local_training_time_s' in item and
+                'client_protocol_time_s' in item):
+            return True
+    return False
 
 
 def round_metric_values(record, metric_name, start_round, end_round):
@@ -1825,7 +1865,9 @@ def cmd_sweep(args):
 def cmd_efficiency(args):
     configs = make_efficiency_configs(
         args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
-        args.efficiency_rounds, test_interval=0)
+        args.efficiency_rounds, test_interval=0,
+        share_bits=args.efficiency_share_bits,
+        shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits)
     dispatch_configs(
         configs, args.gpus, args.tasks_per_gpu,
         args.max_cifar_per_gpu,
@@ -1842,7 +1884,9 @@ def cmd_status(args):
     if not args.no_efficiency:
         efficiency_configs = make_efficiency_configs(
             args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
-            args.efficiency_rounds, test_interval=0)
+            args.efficiency_rounds, test_interval=0,
+            share_bits=args.efficiency_share_bits,
+            shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits)
         report_missing('Efficiency run status:', efficiency_configs, runs)
 
 
@@ -1858,7 +1902,9 @@ def cmd_report(args):
     if not args.no_efficiency:
         efficiency_configs = make_efficiency_configs(
             args.seeds, EFFICIENCY_METHODS, args.efficiency_iid,
-            args.efficiency_rounds, test_interval=0)
+            args.efficiency_rounds, test_interval=0,
+            share_bits=args.efficiency_share_bits,
+            shieldfl_modulus_bits=args.efficiency_shieldfl_modulus_bits)
         report_missing('Efficiency run status:', efficiency_configs, runs)
 
     write_csvs(runs, args.seeds, allow_partial=args.allow_partial)
@@ -2059,10 +2105,17 @@ def build_parser():
         default=SECRET_SHARE_BITS,
         help='bits per additive share for PDFL and PriTrust-FL uploads')
     parser.add_argument(
+        '--efficiency-shieldfl-modulus-bits',
+        '--efficiency_shieldfl_modulus_bits', type=int,
+        default=SHIELDFL_MODULUS_BITS,
+        help='Paillier modulus bit length N for ShieldFL; ciphertexts use '
+        '2N bits')
+    parser.add_argument(
         '--efficiency-he-ciphertext-bits',
         '--efficiency_he_ciphertext_bits', type=int,
-        default=HE_CIPHERTEXT_BITS,
-        help='bits per ShieldFL homomorphic-encryption ciphertext')
+        default=None,
+        help='override bits per ShieldFL ciphertext; default is 2N from '
+        '--efficiency-shieldfl-modulus-bits')
     parser.add_argument(
         '--audit-benchmark-rounds', '--audit_benchmark_rounds', type=int,
         default=50,
@@ -2128,7 +2181,10 @@ def main():
         parser.error('--efficiency-fedavg-bits must be at least 1')
     if args.efficiency_share_bits < 1:
         parser.error('--efficiency-share-bits must be at least 1')
-    if args.efficiency_he_ciphertext_bits < 1:
+    if args.efficiency_shieldfl_modulus_bits < 1:
+        parser.error('--efficiency-shieldfl-modulus-bits must be at least 1')
+    if (args.efficiency_he_ciphertext_bits is not None and
+            args.efficiency_he_ciphertext_bits < 1):
         parser.error('--efficiency-he-ciphertext-bits must be at least 1')
 
     if args.mode == 'sweep':

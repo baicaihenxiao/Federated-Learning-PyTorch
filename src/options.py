@@ -273,6 +273,21 @@ def args_parser(experiment=None):
     parser.add_argument('--pritrust_security_bits', type=int, default=128,
                         help='security-bit value mixed into the plaintext '
                         'stochastic audit seed')
+    parser.add_argument('--secure_share_bits', type=int, default=64,
+                        help='bit length of each additive secret share used '
+                        'for secure-protocol timing estimates')
+    parser.add_argument('--shieldfl_modulus_bits', type=int, default=1024,
+                        help='Paillier modulus bit length N for ShieldFL '
+                        'secure-protocol timing and upload estimates')
+    parser.add_argument('--secure_timing_sample_size', type=int, default=4096,
+                        help='sample size for additive-sharing primitive '
+                        'timing benchmarks')
+    parser.add_argument('--paillier_timing_sample_size', type=int, default=8,
+                        help='sample size for Paillier primitive timing '
+                        'benchmarks')
+    parser.add_argument('--disable_secure_protocol_timing',
+                        action='store_true',
+                        help='report plaintext defense timings only')
     parser.add_argument('--pritrust_alpha_min', type=float,
                         default=argparse.SUPPRESS,
                         help=argparse.SUPPRESS)
@@ -367,6 +382,14 @@ def args_parser(experiment=None):
         parser.error('--pritrust_kappa must be in [0, 1)')
     if args.pritrust_security_bits < 1:
         parser.error('--pritrust_security_bits must be at least 1')
+    if args.secure_share_bits < 1:
+        parser.error('--secure_share_bits must be at least 1')
+    if args.shieldfl_modulus_bits < 1:
+        parser.error('--shieldfl_modulus_bits must be at least 1')
+    if args.secure_timing_sample_size < 1:
+        parser.error('--secure_timing_sample_size must be at least 1')
+    if args.paillier_timing_sample_size < 1:
+        parser.error('--paillier_timing_sample_size must be at least 1')
     if args.dirichlet_alpha <= 0:
         parser.error('--dirichlet_alpha must be greater than 0')
     if args.malicious_ratio < 0 or args.malicious_ratio > 1:

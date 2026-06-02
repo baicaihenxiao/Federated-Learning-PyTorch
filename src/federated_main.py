@@ -92,7 +92,8 @@ def get_federated_run_name(args):
          'pritrust_c_norm', 'pritrust_zeta',
          'pritrust_theta_tem', 'pritrust_theta_spa', 'pritrust_gamma',
          'pritrust_r_max', 'pritrust_rho', 'pritrust_kappa',
-         'pritrust_security_bits',
+         'pritrust_security_bits', 'secure_share_bits',
+         'shieldfl_modulus_bits',
          'attack', 'malicious_ratio', 'test_interval'],
     )
 
@@ -209,6 +210,7 @@ def main():
             selected_malicious_flags = []
             selected_malicious_ids = []
             local_training_time_s = 0.0
+            local_client_training_times_s = []
 
             for user_position, idx in enumerate(idxs_users, start=1):
                 user_start_time = time.time()
@@ -221,15 +223,17 @@ def main():
                 w, _ = local_model.update_weights(
                     model=copy.deepcopy(global_model),
                     global_round=current_epoch)
+                user_training_time_s = time.time() - user_start_time
                 local_weights.append(copy.deepcopy(w))
                 local_sample_counts.append(len(user_groups[idx]))
-                local_training_time_s += time.time() - user_start_time
+                local_training_time_s += user_training_time_s
+                local_client_training_times_s.append(user_training_time_s)
                 if args.verbose:
                     LOGGER.info(
                         '| Global Round : %s/%s | User : %s/%s (idx: %s) | '
                         'User Time: %.2fs',
                         current_epoch, args.epochs, user_position, m,
-                        int(idx), time.time() - user_start_time)
+                        int(idx), user_training_time_s)
 
             local_weights = apply_update_attack(
                 args, global_weights, local_weights, local_sample_counts,
@@ -278,6 +282,15 @@ def main():
             elapsed_time = now - start_time
             progress_summary = format_round_progress(
                 current_epoch, args.epochs, elapsed_time)
+            parallel_local_training_time_s = (
+                max(local_client_training_times_s)
+                if local_client_training_times_s else 0.0)
+            client_protocol_time_s = float(
+                defense_info.get('client_protocol_time_s', 0.0))
+            online_round_time_s = (
+                parallel_local_training_time_s +
+                client_protocol_time_s +
+                float(defense_info.get('server_online_time_s', 0.0)))
             round_metric = {
                 'round': current_epoch,
                 'dataset': args.dataset,
@@ -285,6 +298,12 @@ def main():
                 'selected_clients': m,
                 'selected_client_ids': list(selected_client_ids_ordered),
                 'local_training_time_s': float(local_training_time_s),
+                'local_client_training_times_s': [
+                    float(value) for value in local_client_training_times_s
+                ],
+                'parallel_local_training_time_s': float(
+                    parallel_local_training_time_s),
+                'client_protocol_time_s': client_protocol_time_s,
                 'server_audit_time_s': float(
                     defense_info.get('server_audit_time_s', 0.0)),
                 'aggregation_time_s': float(
@@ -292,8 +311,9 @@ def main():
                 'server_online_time_s': float(
                     defense_info.get('server_online_time_s', 0.0)),
                 'aggregation_call_time_s': float(aggregation_call_time_s),
-                'online_round_time_s': float(round_time),
+                'online_round_time_s': float(online_round_time_s),
                 'round_time_s': float(round_time),
+                'sequential_wall_round_time_s': float(round_time),
                 'audited_layer_count': defense_info.get(
                     'audited_layer_count'),
                 'auditable_layer_count': defense_info.get(
@@ -301,6 +321,18 @@ def main():
                 'audited_layer_ratio': defense_info.get(
                     'audited_layer_ratio'),
             }
+            for timing_key in [
+                    'secure_protocol',
+                    'secure_protocol_audit_time_s',
+                    'secure_protocol_aggregation_time_s',
+                    'secure_protocol_parameter_count',
+                    'secure_protocol_audited_parameter_count',
+                    'secure_protocol_selected_clients',
+                    'secure_protocol_retained_clients',
+                    'plaintext_audit_time_s',
+                    'plaintext_aggregation_time_s']:
+                if timing_key in defense_info:
+                    round_metric[timing_key] = defense_info[timing_key]
             round_metrics.append(round_metric)
 
             selected_users_summary = 'Selected Users: {}/{}'.format(
@@ -345,11 +377,12 @@ def main():
                     round_summary += ' | ASR: {:.2f}%'.format(100*asr)
             round_summary += (
                 ' | LR: {:.6f} | Audit Time: {:.4f}s | '
-                'Aggregation Time: {:.4f}s | Progress: {} | Round Time: {} | '
-                'Elapsed Time: {}'.format(
+                'Aggregation Time: {:.4f}s | Online Round Time: {:.4f}s | '
+                'Progress: {} | Wall Round Time: {} | Elapsed Time: {}'.format(
                     args.current_lr,
                     round_metric['server_audit_time_s'],
                     round_metric['aggregation_time_s'],
+                    round_metric['online_round_time_s'],
                     progress_summary,
                     format_run_time(round_time),
                     format_run_time(elapsed_time))

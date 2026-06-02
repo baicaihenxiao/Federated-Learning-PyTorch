@@ -152,10 +152,16 @@ python scripts/run_experiments.py report --no-plots
 Efficiency mode runs benign FedAvg, ShieldFL, PDFL, and PriTrust-FL jobs on
 MNIST and CIFAR-10. Each job runs 40 rounds by default, and the report averages
 client upload size, server audit time, aggregation time, and online round time
-over rounds 10-40. The timing data is saved in each run pickle under
-`round_metrics`; communication sizes are computed from the configured protocol
-encodings (`--efficiency-fedavg-bits`, `--efficiency-share-bits`, and
-`--efficiency-he-ciphertext-bits`).
+over rounds 10-40. Online round time uses a parallel-client estimate: the
+slowest selected local client plus protocol preparation, server audit, and
+secure aggregation. The timing data is saved in each run pickle under
+`round_metrics`. Secure-protocol timing is estimated from measured primitive
+benchmarks and operation counts. The default protocol assumptions are 64-bit
+additive shares for PDFL/PriTrust-FL and ShieldFL Paillier security level
+80-bit with `N=1024`, so each ShieldFL ciphertext is modeled as `2N=2048`
+bits. These defaults can be changed with `--efficiency-share-bits`,
+`--efficiency-shieldfl-modulus-bits`, and
+`--efficiency-he-ciphertext-bits`.
 
 You can change the default values of other parameters to simulate different conditions. Refer to the options section.
 
@@ -184,6 +190,8 @@ The default values for various paramters parsed to the experiment are given in `
 * ```--pritrust_rho:``` Historical trust memory factor for PriTrust-FL. Default: `0.7`.
 * ```--pritrust_kappa:``` Punishment factor for filtered PriTrust-FL clients. Default: `0.2`.
 * ```--pritrust_security_bits:``` Security-bit value mixed into the plaintext stochastic audit seed. Default: `128`.
+* ```--secure_share_bits:``` Bit length of each additive share used in secure-protocol timing estimates. Default: `64`.
+* ```--shieldfl_modulus_bits:``` Paillier modulus bit length `N` for ShieldFL timing and upload estimates. Default: `1024`.
 * ```--attack:```   Federated attack. Options: `none`, `sign_flip`, `min_max`, `label_flip`, `backdoor`. Default: `none`.
 * ```--malicious_ratio:``` Fraction of total clients controlled by the adversary. Default: `0.0`.
 * ```--sign_flip_lambda:``` Sign-flip amplification factor. Default: `5.0`.

@@ -17,6 +17,10 @@ TRIMMED_MEAN = 'trimmed_mean'
 SHIELDFL = 'shieldfl'
 PDFL = 'pdfl'
 PRITRUST_FL = 'pritrust_fl'
+DEFAULT_SECURE_SHARE_BITS = 64
+DEFAULT_SHIELDFL_MODULUS_BITS = 1024
+DEFAULT_SECURE_TIMING_SAMPLE_SIZE = 4096
+DEFAULT_PAILLIER_TIMING_SAMPLE_SIZE = 8
 
 DEFENSE_CHOICES = [
     FEDAVG, KRUM, TRIMMED_MEAN, SHIELDFL, PDFL, PRITRUST_FL,
@@ -82,7 +86,7 @@ def aggregate_weights(args, global_weights, local_weights, sample_counts,
                          client_ids, state)
     if defense == PDFL:
         return _pdfl(args, global_weights, local_weights, sample_counts,
-                     client_ids)
+                     client_ids, state)
     if defense == PRITRUST_FL:
         return _pritrust_fl(args, global_weights, local_weights,
                             sample_counts, client_ids, state)
@@ -90,12 +94,218 @@ def aggregate_weights(args, global_weights, local_weights, sample_counts,
     raise ValueError('unsupported defense: {}'.format(defense))
 
 
-def _with_efficiency_timing(info, audit_time_s, aggregation_time_s):
+def _with_efficiency_timing(info, audit_time_s, aggregation_time_s,
+                            client_protocol_time_s=0.0,
+                            plaintext_audit_time_s=None,
+                            plaintext_aggregation_time_s=None):
     info = dict(info)
+    if plaintext_audit_time_s is not None:
+        info['plaintext_audit_time_s'] = float(plaintext_audit_time_s)
+    if plaintext_aggregation_time_s is not None:
+        info['plaintext_aggregation_time_s'] = float(
+            plaintext_aggregation_time_s)
     info['server_audit_time_s'] = float(audit_time_s)
     info['aggregation_time_s'] = float(aggregation_time_s)
     info['server_online_time_s'] = float(audit_time_s + aggregation_time_s)
+    info['client_protocol_time_s'] = float(client_protocol_time_s)
     return info
+
+
+def _add_secure_protocol_timing(args, state, method, info, global_weights,
+                                selected_count, audited_keys=None,
+                                retained_count=None,
+                                plaintext_audit_time_s=0.0,
+                                plaintext_aggregation_time_s=0.0):
+    secure_timing = _estimate_secure_protocol_timing(
+        args, state, method, global_weights, selected_count,
+        audited_keys=audited_keys, retained_count=retained_count)
+    info.update(secure_timing)
+    return _with_efficiency_timing(
+        info,
+        plaintext_audit_time_s + secure_timing['secure_protocol_audit_time_s'],
+        (plaintext_aggregation_time_s +
+         secure_timing['secure_protocol_aggregation_time_s']),
+        client_protocol_time_s=secure_timing['client_protocol_time_s'],
+        plaintext_audit_time_s=plaintext_audit_time_s,
+        plaintext_aggregation_time_s=plaintext_aggregation_time_s)
+
+
+def _estimate_secure_protocol_timing(args, state, method, global_weights,
+                                     selected_count, audited_keys=None,
+                                     retained_count=None):
+    if getattr(args, 'disable_secure_protocol_timing', False):
+        return _zero_secure_protocol_timing()
+
+    method = normalize_defense_name(method)
+    if method not in (SHIELDFL, PDFL, PRITRUST_FL):
+        return _zero_secure_protocol_timing()
+
+    state = {} if state is None else state
+    primitives = _secure_protocol_primitives(args, state)
+    selected_count = max(int(selected_count), 0)
+    retained_count = selected_count if retained_count is None else max(
+        int(retained_count), 0)
+    total_params = _learnable_parameter_count(global_weights)
+    audited_params = (
+        _parameter_count_for_keys(global_weights, audited_keys)
+        if audited_keys is not None else total_params
+    )
+
+    if total_params <= 0 or selected_count <= 0:
+        return _zero_secure_protocol_timing()
+
+    if method == SHIELDFL:
+        client_time = (
+            total_params * primitives['paillier_encrypt_per_element_s'])
+        audit_time = (
+            selected_count * total_params *
+            (primitives['paillier_add_per_element_s'] +
+             primitives['paillier_scalar_mul_per_element_s']))
+        aggregation_time = (
+            retained_count * total_params *
+            primitives['paillier_add_per_element_s'])
+        protocol = 'paillier_n{}_80bit'.format(
+            int(getattr(args, 'shieldfl_modulus_bits',
+                        DEFAULT_SHIELDFL_MODULUS_BITS)))
+    elif method == PDFL:
+        client_time = total_params * primitives['share_per_element_s']
+        audit_time = (
+            selected_count * total_params *
+            (2.0 * primitives['ring_mul_per_element_s'] +
+             primitives['ring_add_per_element_s']))
+        aggregation_time = (
+            retained_count * total_params *
+            (primitives['ring_mul_per_element_s'] +
+             primitives['ring_add_per_element_s']))
+        protocol = 'additive_secret_sharing_{}bit'.format(
+            int(getattr(args, 'secure_share_bits',
+                        DEFAULT_SECURE_SHARE_BITS)))
+    else:
+        client_time = total_params * primitives['share_per_element_s']
+        audit_time = (
+            selected_count * audited_params *
+            (3.0 * primitives['ring_mul_per_element_s'] +
+             2.0 * primitives['ring_compare_per_element_s'] +
+             primitives['ring_add_per_element_s']))
+        aggregation_time = (
+            retained_count * total_params *
+            (primitives['ring_mul_per_element_s'] +
+             primitives['ring_add_per_element_s']))
+        protocol = 'additive_secret_sharing_{}bit'.format(
+            int(getattr(args, 'secure_share_bits',
+                        DEFAULT_SECURE_SHARE_BITS)))
+
+    return {
+        'secure_protocol': protocol,
+        'secure_protocol_parameter_count': int(total_params),
+        'secure_protocol_audited_parameter_count': int(audited_params),
+        'secure_protocol_selected_clients': int(selected_count),
+        'secure_protocol_retained_clients': int(retained_count),
+        'secure_protocol_audit_time_s': float(audit_time),
+        'secure_protocol_aggregation_time_s': float(aggregation_time),
+        'client_protocol_time_s': float(client_time),
+    }
+
+
+def _zero_secure_protocol_timing():
+    return {
+        'secure_protocol': 'none',
+        'secure_protocol_parameter_count': 0,
+        'secure_protocol_audited_parameter_count': 0,
+        'secure_protocol_selected_clients': 0,
+        'secure_protocol_retained_clients': 0,
+        'secure_protocol_audit_time_s': 0.0,
+        'secure_protocol_aggregation_time_s': 0.0,
+        'client_protocol_time_s': 0.0,
+    }
+
+
+def _secure_protocol_primitives(args, state):
+    cache = state.setdefault('secure_protocol_primitive_cache', {})
+    key = (
+        int(getattr(args, 'secure_share_bits',
+                    DEFAULT_SECURE_SHARE_BITS)),
+        int(getattr(args, 'shieldfl_modulus_bits',
+                    DEFAULT_SHIELDFL_MODULUS_BITS)),
+        int(getattr(args, 'secure_timing_sample_size',
+                    DEFAULT_SECURE_TIMING_SAMPLE_SIZE)),
+        int(getattr(args, 'paillier_timing_sample_size',
+                    DEFAULT_PAILLIER_TIMING_SAMPLE_SIZE)),
+    )
+    if key not in cache:
+        cache[key] = _benchmark_secure_protocol_primitives(*key)
+    return cache[key]
+
+
+def _benchmark_secure_protocol_primitives(share_bits, modulus_bits,
+                                          ring_sample_size,
+                                          paillier_sample_size):
+    ring_sample_size = max(int(ring_sample_size), 1)
+    paillier_sample_size = max(int(paillier_sample_size), 1)
+
+    high = 2 ** min(max(int(share_bits), 2), 62)
+    start = time.perf_counter()
+    torch.randint(0, high, (ring_sample_size,), dtype=torch.int64)
+    share_time = (time.perf_counter() - start) / float(ring_sample_size)
+
+    left = torch.randint(0, high, (ring_sample_size,), dtype=torch.int64)
+    right = torch.randint(0, high, (ring_sample_size,), dtype=torch.int64)
+    start = time.perf_counter()
+    _ = left + right
+    ring_add_time = (time.perf_counter() - start) / float(ring_sample_size)
+    start = time.perf_counter()
+    _ = left * right
+    ring_mul_time = (time.perf_counter() - start) / float(ring_sample_size)
+    start = time.perf_counter()
+    _ = left > right
+    compare_time = (time.perf_counter() - start) / float(ring_sample_size)
+
+    modulus = (1 << int(modulus_bits)) - 109
+    modulus_square = modulus * modulus
+    ciphertexts = [
+        ((idx + 2) * (idx + 3)) % modulus_square
+        for idx in range(paillier_sample_size)
+    ]
+    scalars = [idx + 17 for idx in range(paillier_sample_size)]
+
+    start = time.perf_counter()
+    for value in scalars:
+        pow(value, modulus, modulus_square)
+    paillier_encrypt_time = (
+        (time.perf_counter() - start) / float(paillier_sample_size))
+
+    start = time.perf_counter()
+    accumulator = 1
+    for value in ciphertexts:
+        accumulator = (accumulator * value) % modulus_square
+    paillier_add_time = (
+        (time.perf_counter() - start) / float(paillier_sample_size))
+
+    start = time.perf_counter()
+    for value, scalar in zip(ciphertexts, scalars):
+        pow(value, scalar, modulus_square)
+    paillier_scalar_mul_time = (
+        (time.perf_counter() - start) / float(paillier_sample_size))
+
+    return {
+        'share_per_element_s': share_time,
+        'ring_add_per_element_s': ring_add_time,
+        'ring_mul_per_element_s': ring_mul_time,
+        'ring_compare_per_element_s': compare_time,
+        'paillier_encrypt_per_element_s': paillier_encrypt_time,
+        'paillier_add_per_element_s': paillier_add_time,
+        'paillier_scalar_mul_per_element_s': paillier_scalar_mul_time,
+    }
+
+
+def _learnable_parameter_count(weights):
+    return _parameter_count_for_keys(weights, _pritrust_auditable_keys(weights))
+
+
+def _parameter_count_for_keys(weights, keys):
+    if not keys:
+        return 0
+    return sum(int(weights[key].numel()) for key in keys)
 
 
 def _resolve_byzantine_count(args, num_clients, require_krum_feasible=False):
@@ -324,11 +534,14 @@ def _shieldfl(args, global_weights, local_weights, sample_counts,
         aggregation_start = time.perf_counter()
         aggregated = average_weights(local_weights, sample_counts)
         aggregation_time_s = time.perf_counter() - aggregation_start
-        return aggregated, _with_efficiency_timing({
+        return aggregated, _add_secure_protocol_timing(
+            args, state, SHIELDFL, {
             'defense': SHIELDFL,
             'selected_count': len(local_weights),
             'fallback': 'no floating parameters',
-        }, audit_time_s, aggregation_time_s)
+            }, global_weights, len(local_weights),
+            plaintext_audit_time_s=audit_time_s,
+            plaintext_aggregation_time_s=aggregation_time_s)
 
     _, normalized, norms, accepted = _plaintext_normalized_deltas(
         local_weights, global_weights, keys)
@@ -337,14 +550,17 @@ def _shieldfl(args, global_weights, local_weights, sample_counts,
         aggregation_start = time.perf_counter()
         aggregated = average_weights(local_weights, sample_counts)
         aggregation_time_s = time.perf_counter() - aggregation_start
-        return aggregated, _with_efficiency_timing({
+        return aggregated, _add_secure_protocol_timing(
+            args, state, SHIELDFL, {
             'defense': SHIELDFL,
             'selected_count': len(local_weights),
             'fallback': 'zero update vectors',
             'audited_layer_count': len(keys),
             'auditable_layer_count': len(keys),
             'audited_layer_ratio': 1.0,
-        }, audit_time_s, aggregation_time_s)
+            }, global_weights, len(local_weights), audited_keys=keys,
+            plaintext_audit_time_s=audit_time_s,
+            plaintext_aggregation_time_s=aggregation_time_s)
 
     previous = state.get('shieldfl_previous_aggregate')
     if previous is None or previous.numel() != normalized.size(1):
@@ -357,7 +573,8 @@ def _shieldfl(args, global_weights, local_weights, sample_counts,
                                      norms))
         aggregation_time_s = time.perf_counter() - aggregation_start
         state['shieldfl_previous_aggregate'] = aggregate_direction
-        return aggregated, _with_efficiency_timing({
+        return aggregated, _add_secure_protocol_timing(
+            args, state, SHIELDFL, {
             'defense': SHIELDFL,
             'selected_count': len(accepted),
             'selected_clients': [int(client_ids[position])
@@ -368,7 +585,10 @@ def _shieldfl(args, global_weights, local_weights, sample_counts,
             'audited_layer_count': len(keys),
             'auditable_layer_count': len(keys),
             'audited_layer_ratio': 1.0,
-        }, audit_time_s, aggregation_time_s)
+            }, global_weights, len(local_weights), audited_keys=keys,
+            retained_count=len(accepted),
+            plaintext_audit_time_s=audit_time_s,
+            plaintext_aggregation_time_s=aggregation_time_s)
 
     previous_normalized, previous_norms = _safe_normalize(previous.view(1, -1))
     if float(previous_norms[0].item()) <= 0.0:
@@ -419,11 +639,16 @@ def _shieldfl(args, global_weights, local_weights, sample_counts,
     }
     if fallback is not None:
         info['fallback'] = fallback
-    return aggregated, _with_efficiency_timing(
-        info, audit_time_s, aggregation_time_s)
+    return aggregated, _add_secure_protocol_timing(
+        args, state, SHIELDFL, info, global_weights, len(local_weights),
+        audited_keys=keys, retained_count=len(accepted),
+        plaintext_audit_time_s=audit_time_s,
+        plaintext_aggregation_time_s=aggregation_time_s)
 
 
-def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
+def _pdfl(args, global_weights, local_weights, sample_counts, client_ids,
+          state=None):
+    state = {} if state is None else state
     audit_start = time.perf_counter()
     keys = _floating_keys(global_weights)
     if not keys:
@@ -431,11 +656,14 @@ def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
         aggregation_start = time.perf_counter()
         aggregated = average_weights(local_weights, sample_counts)
         aggregation_time_s = time.perf_counter() - aggregation_start
-        return aggregated, _with_efficiency_timing({
+        return aggregated, _add_secure_protocol_timing(
+            args, state, PDFL, {
             'defense': PDFL,
             'selected_count': len(local_weights),
             'fallback': 'no floating parameters',
-        }, audit_time_s, aggregation_time_s)
+            }, global_weights, len(local_weights),
+            plaintext_audit_time_s=audit_time_s,
+            plaintext_aggregation_time_s=aggregation_time_s)
 
     _, normalized, norms, accepted = _plaintext_normalized_deltas(
         local_weights, global_weights, keys)
@@ -444,14 +672,17 @@ def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
         aggregation_start = time.perf_counter()
         aggregated = average_weights(local_weights, sample_counts)
         aggregation_time_s = time.perf_counter() - aggregation_start
-        return aggregated, _with_efficiency_timing({
+        return aggregated, _add_secure_protocol_timing(
+            args, state, PDFL, {
             'defense': PDFL,
             'selected_count': len(local_weights),
             'fallback': 'zero update vectors',
             'audited_layer_count': len(keys),
             'auditable_layer_count': len(keys),
             'audited_layer_ratio': 1.0,
-        }, audit_time_s, aggregation_time_s)
+            }, global_weights, len(local_weights), audited_keys=keys,
+            plaintext_audit_time_s=audit_time_s,
+            plaintext_aggregation_time_s=aggregation_time_s)
 
     similarities = normalized.matmul(normalized.t()).clamp(
         min=-1.0, max=1.0)
@@ -490,8 +721,11 @@ def _pdfl(args, global_weights, local_weights, sample_counts, client_ids):
     }
     if fallback is not None:
         info['fallback'] = fallback
-    return aggregated, _with_efficiency_timing(
-        info, audit_time_s, aggregation_time_s)
+    return aggregated, _add_secure_protocol_timing(
+        args, state, PDFL, info, global_weights, len(local_weights),
+        audited_keys=keys, retained_count=len(cluster),
+        plaintext_audit_time_s=audit_time_s,
+        plaintext_aggregation_time_s=aggregation_time_s)
 
 
 def _largest_similarity_component(similarities, positions, threshold):
@@ -548,11 +782,14 @@ def _pritrust_fl(args, global_weights, local_weights, sample_counts,
         aggregation_start = time.perf_counter()
         aggregated = average_weights(local_weights, sample_counts)
         aggregation_time_s = time.perf_counter() - aggregation_start
-        return aggregated, _with_efficiency_timing({
+        return aggregated, _add_secure_protocol_timing(
+            args, state, PRITRUST_FL, {
             'defense': PRITRUST_FL,
             'selected_count': len(local_weights),
             'fallback': 'no auditable floating parameters',
-        }, audit_time_s, aggregation_time_s)
+            }, global_weights, len(local_weights),
+            plaintext_audit_time_s=audit_time_s,
+            plaintext_aggregation_time_s=aggregation_time_s)
 
     trust_memory = state.setdefault('pritrust_client_trust', {})
     previous_trust = [
@@ -634,8 +871,11 @@ def _pritrust_fl(args, global_weights, local_weights, sample_counts,
     }
     if norm_fallback is not None:
         info['fallback'] = norm_fallback
-    return aggregated, _with_efficiency_timing(
-        info, audit_time_s, aggregation_time_s)
+    return aggregated, _add_secure_protocol_timing(
+        args, state, PRITRUST_FL, info, global_weights, len(local_weights),
+        audited_keys=audited_keys, retained_count=len(retained_positions),
+        plaintext_audit_time_s=audit_time_s,
+        plaintext_aggregation_time_s=aggregation_time_s)
 
 
 def _normalize_or_uniform(values):
